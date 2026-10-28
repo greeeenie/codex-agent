@@ -1,6 +1,6 @@
 {
   "name": "codex-agent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Local Codex runner for Codex Hub",
@@ -9,6 +9,7 @@
   },
   "scripts": {
     "start": "node runner/start.mjs",
-    "test": "node --test runner/engine.test.mjs"
+    "test": "node --test runner/*.test.mjs",
+    "build:windows": "node windows/build.mjs"
   }
 }

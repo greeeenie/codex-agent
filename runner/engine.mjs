@@ -2,6 +2,8 @@ import {readFile,realpath,stat,mkdir} from 'node:fs/promises';
 import path from 'node:path';
 import {CodexClient} from './codex-client.mjs';
 import {openBrowser} from './connect.mjs';
+import {status} from './desktop-status.mjs';
+import {discoverProjects} from './projects.mjs';
 
 export class Runner{
  constructor(config,client=new CodexClient()){this.config=config;this.client=client;this.agent={account:null};this.active=null;this.reportPending=null;this.lastCommand=null;this.lastAccountRead=0;this.closed=false;}
@@ -11,7 +13,7 @@ export class Runner{
   this.client.on('notification',m=>this.notification(m).catch(e=>console.error(e.message)));
   this.client.on('request',m=>this.serverRequest(m).catch(e=>console.error(e.message)));
   await this.client.start();await this.refreshAccount();
-  if(!this.agent.account){const login=await this.client.call('account/login/start',{type:'chatgpt'});this.agent.authUrl=login.authUrl;openBrowser(login.authUrl);}
+  if(!this.agent.account){status('signing-in','Sign in to Codex in your browser');const login=await this.client.call('account/login/start',{type:'chatgpt'});this.agent.authUrl=login.authUrl;openBrowser(login.authUrl);}
   await this.recover();
  }
  async refreshAccount(){this.lastAccountRead=Date.now();try{const {account}=await this.client.call('account/read',{refreshToken:false});this.agent.account=account;
@@ -20,19 +22,20 @@ export class Runner{
  }catch(e){this.agent.error=e.message;}}
  async recover(){const state=await this.request({action:'state'});const ids=new Set(this.config.projects.map(p=>p.id));
   // A lost process is never called successful; preserve context and ask for review.
-  for(const t of state.tasks.filter(t=>t.status==='running'&&ids.has(t.projectId)))await this.request({action:'report',id:t.id,runId:t.runId,status:'review',result:'Связь с предыдущим запуском прервалась. Проверьте изменения в проекте и нажмите «Восстановить», чтобы продолжить с сохранённым контекстом.'});
+  for(const t of state.tasks.filter(t=>t.status==='running'&&ids.has(t.projectId)))await this.request({action:'report',id:t.id,runId:t.runId,status:'backlog',result:'Связь с предыдущим запуском прервалась. Проверьте изменения в проекте и нажмите «Восстановить», чтобы продолжить с сохранённым контекстом.'});
  }
  async tick(){
   if(this.closed)throw new Error('Codex отключился. Перезапустите локальный агент.');
-  if(Date.now()-this.lastAccountRead>60000)await this.refreshAccount();
+  if(Date.now()-this.lastAccountRead>60000){await this.refreshAccount();if(this.config.discoverProjects)this.config.projects=await discoverProjects();}
   const {command}=await this.request({action:'heartbeat',projects:this.config.projects,agent:this.agent});
   if(command?.type==='login'&&command.id!==this.lastCommand){this.lastCommand=command.id;const login=await this.client.call('account/login/start',{type:'chatgpt'});this.agent.authUrl=login.authUrl;await this.request({action:'heartbeat',projects:this.config.projects,agent:this.agent});}
   if(this.reportPending){await this.request(this.reportPending);this.reportPending=null;this.active=null;}
-  if(this.active){const s=await this.request({action:'state'}),task=s.tasks.find(t=>t.id===this.active.id);if(task?.stopRequested&&this.active.turnId&&!this.active.interrupting){this.active.interrupting=true;await this.client.call('turn/interrupt',{threadId:this.active.threadId,turnId:this.active.turnId});}return;}
-  if(!this.agent.account||this.agent.authUrl)return;
+  if(this.active){status('running','Codex is working on a task');const s=await this.request({action:'state'}),task=s.tasks.find(t=>t.id===this.active.id);if(task?.stopRequested&&this.active.turnId&&!this.active.interrupting){this.active.interrupting=true;await this.client.call('turn/interrupt',{threadId:this.active.threadId,turnId:this.active.turnId});}return;}
+  if(!this.agent.account||this.agent.authUrl){status('signing-in','Sign in to Codex');return;}
+  status(this.active?'running':this.config.projects.length?'ready':'waiting-projects','');
   const {task}=await this.request({action:'claim',projectIds:this.config.projects.map(p=>p.id)});if(task)await this.execute(task);
  }
- async execute(task){this.active={...task,messages:[],shots:[]};
+ async execute(task){status('running','Codex is working on a task');this.active={...task,messages:[],shots:[]};
   try{
    const project=this.config.projects.find(p=>p.id===task.projectId);if(!project)throw new Error('Проект не разрешён на этом компьютере');
    const cwd=await realpath(project.path);if(!(await stat(cwd)).isDirectory())throw new Error('Папка проекта не найдена');
@@ -47,7 +50,7 @@ export class Runner{
    const turn=await this.client.call('turn/start',{threadId:this.active.threadId,input:[{type:'text',text:prompt}],cwd,approvalPolicy:'on-request',sandboxPolicy:{type:'workspaceWrite',writableRoots:[cwd],networkAccess:false},summary:'concise'});
    if(!this.active)return;this.active.turnId=turn.turn.id;
    await this.request({action:'report',id:task.id,runId:task.runId,threadId:this.active.threadId,turnId:this.active.turnId});
-  }catch(e){this.finish('review',`Не удалось выполнить задачу: ${e.message}`);}
+  }catch(e){this.finish('backlog',`Не удалось выполнить задачу: ${e.message}`);}
  }
  async notification(m){const p=m.params??{};
   if(m.method==='account/updated'||m.method==='account/login/completed'){await this.refreshAccount();return;}
@@ -60,7 +63,7 @@ export class Runner{
    await this.uploadScreenshots(text);
    const summary=text.replace(/^SCREENSHOT:.*$/gm,'').trim().slice(0,11500);
    const status=p.turn?.status;
-   this.finish('review',status==='completed'?(summary||'Codex завершил работу. Проверьте изменения в проекте.'):status==='interrupted'?`Задача остановлена. ${this.active.blockReason??'Частичные изменения сохранены в проекте.'}`:`Ошибка выполнения: ${p.turn?.error?.message??status??'неизвестная ошибка'}`);
+   this.finish(status==='completed'?'done':'backlog',status==='completed'?(summary||'Codex завершил работу. Проверьте изменения в проекте.'):status==='interrupted'?`Задача остановлена. ${this.active.blockReason??'Частичные изменения сохранены в проекте.'}`:`Ошибка выполнения: ${p.turn?.error?.message??status??'неизвестная ошибка'}`);
   }
  }
  async serverRequest(m){
@@ -85,5 +88,9 @@ export class Runner{
    }catch(e){console.error(`Скриншот не загружен: ${e.message}`);}
   }
  }
- async stop(){if(this.active?.turnId)await this.client.call('turn/interrupt',{threadId:this.active.threadId,turnId:this.active.turnId}).catch(()=>{});this.client.close();}
+ async stop(){
+  if(this.active?.turnId)await this.client.call('turn/interrupt',{threadId:this.active.threadId,turnId:this.active.turnId}).catch(()=>{});
+  if(this.active)await this.request(this.reportPending??{action:'report',id:this.active.id,runId:this.active.runId,threadId:this.active.threadId,status:'backlog',result:'Задача остановлена. Изменения сохранены в проекте.'}).catch(()=>{});
+  this.client.close();
+ }
 }

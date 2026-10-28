@@ -1,24 +1,39 @@
-import {readFile,writeFile,unlink,open,mkdir} from 'node:fs/promises';
+import {readFile,unlink,open,mkdir} from 'node:fs/promises';
 import {Runner} from './engine.mjs';
 import {savedToken,connectSite} from './connect.mjs';
 import {discoverProjects} from './projects.mjs';
+import {status} from './desktop-status.mjs';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
-const lockfile=path.join(root,'.sites-runtime','runner.lock');let ownsLock=false;
-async function takeLock(){await mkdir(path.dirname(lockfile),{recursive:true});try{const lock=await open(lockfile,'wx');await lock.writeFile(String(process.pid));await lock.close();ownsLock=true;}catch(e){if(e.code!=='EEXIST')throw e;const pid=Number(await readFile(lockfile,'utf8'));let alive=false;try{process.kill(pid,0);alive=true;}catch{}if(alive)throw new Error('Локальный агент уже запущен.');await unlink(lockfile);return takeLock();}}
-async function hiddenConfig(){process.stdin.setRawMode?.(true);process.stdout.write('Ready for runner configuration (input is hidden).\n');return new Promise((resolve,reject)=>{let line='';const read=chunk=>{line+=chunk.toString();if(line.includes('\n')||line.includes('\r')){process.stdin.off('data',read);process.stdin.setRawMode?.(false);process.stdin.pause();try{resolve(JSON.parse(line.trim()));}catch(e){reject(e);}}};process.stdin.on('data',read);process.stdin.resume();});}
+const dataDir=process.env.CODEX_AGENT_DATA_DIR??path.join(root,'.sites-runtime');
+const lockfile=path.join(dataDir,'runner.lock');
+let ownsLock=false,runner,stopping=false;
+const abort=new AbortController();
+async function takeLock(){
+ await mkdir(dataDir,{recursive:true});
+ try{const lock=await open(lockfile,'wx');await lock.writeFile(String(process.pid));await lock.close();ownsLock=true;}
+ catch(e){if(e.code!=='EEXIST')throw e;const pid=Number(await readFile(lockfile,'utf8'));let alive=false;try{process.kill(pid,0);alive=true;}catch{}if(alive)throw new Error('Another agent is already running.');await unlink(lockfile);return takeLock();}
+}
+async function shutdown(){if(stopping)return;stopping=true;abort.abort();await runner?.stop();if(ownsLock){await unlink(lockfile).catch(()=>{});ownsLock=false;}process.exit(0);}
+for(const signal of ['SIGINT','SIGTERM'])process.on(signal,shutdown);
+if(process.argv.includes('--desktop')){process.stdin.setEncoding('utf8');process.stdin.on('data',data=>{if(data.trim()==='shutdown')shutdown();});process.stdin.resume();}
+async function hiddenConfig(){process.stdin.setRawMode?.(true);console.log('Ready for runner configuration (input is hidden).');return new Promise((resolve,reject)=>{let line='';const read=chunk=>{line+=chunk.toString();if(/[\r\n]/.test(line)){process.stdin.off('data',read);process.stdin.setRawMode?.(false);process.stdin.pause();try{resolve(JSON.parse(line.trim()));}catch(e){reject(e);}}};process.stdin.on('data',read);process.stdin.resume();});}
 try{
- const settings=await readFile(path.join(root,'.sites-runtime','runner.json'),'utf8').then(JSON.parse).catch(()=>({url:'https://agent-board-stepan.readymars.chatgpt.site'}));
+ const settings=await readFile(path.join(dataDir,'runner.json'),'utf8').then(JSON.parse).catch(()=>({url:'https://agent-board-stepan.readymars.chatgpt.site'}));
  const input=process.argv.includes('--stdin')?await hiddenConfig():{};
  const config={...settings,...input,token:input.token??process.env.SITES_SERVICE_TOKEN};
- const origin=new URL(config.url);if(origin.protocol!=='https:'&&origin.hostname!=='127.0.0.1'&&origin.hostname!=='localhost')throw new Error('Для Sites необходим HTTPS');config.url=origin.origin;
- if(!config.projects?.length)config.projects=await discoverProjects();
- if(!config.projects?.length)throw new Error('Откройте нужную папку как проект в Codex и запустите агент ещё раз.');
- await takeLock();
- config.token??=await savedToken(config.url)??await connectSite(config.url);
- const runner=new Runner(config);await runner.start();console.log('Agent Board: Codex подключён. Проверка очереди каждые 5 секунд.');
- let stopping=false;for(const signal of ['SIGINT','SIGTERM'])process.on(signal,async()=>{stopping=true;await runner.stop();if(ownsLock)await unlink(lockfile).catch(()=>{});process.exit(0);});
- while(!stopping){try{await runner.tick();}catch(e){console.error(`Agent Board: ${e.message}`);if(runner.closed){await runner.stop();process.exitCode=1;break;}}await new Promise(r=>setTimeout(r,5000));}
-}catch(e){console.error(`Agent Board: ${e.message}`);process.exitCode=1;}
-finally{if(ownsLock)await unlink(lockfile).catch(()=>{});}
+ const origin=new URL(config.url);if(origin.protocol!=='https:'&&!['127.0.0.1','localhost'].includes(origin.hostname))throw new Error('HTTPS is required.');config.url=origin.origin;
+ config.discoverProjects=!config.projects?.length;if(config.discoverProjects)config.projects=await discoverProjects();
+ await takeLock();status('connecting','Connecting to Codex Hub');
+ if(!config.token)config.token=await savedToken(config.url);
+ if(!config.token){status('pairing','Confirm this computer in your browser');config.token=await connectSite(config.url,{signal:abort.signal});}
+ if(stopping)process.exit(0);
+ runner=new Runner(config);await runner.start();
+ console.log('Codex Agent started. Queue polling does not invoke the model.');
+ while(!stopping){
+  try{await runner.tick();}catch(e){status('error',e.message);console.error('Codex Agent: '+e.message);if(runner.closed)throw e;}
+  await new Promise(resolve=>{const timer=setTimeout(resolve,5000);abort.signal.addEventListener('abort',()=>{clearTimeout(timer);resolve();},{once:true});});
+ }
+}catch(e){if(!stopping){status(e.code==='CODEX_NOT_FOUND'?'missing-codex':'error',e.message);console.error('Codex Agent: '+e.message);process.exitCode=1;}}
+finally{await runner?.stop();if(ownsLock)await unlink(lockfile).catch(()=>{});process.stdin.pause();}

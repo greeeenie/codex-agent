@@ -14,7 +14,7 @@ async function dpapi(value,decrypt=false){
 }
 export async function savedToken(origin){try{const saved=JSON.parse(await readFile(secretFile,'utf8'));return saved.origin===origin?await dpapi(saved.ciphertext,true):null;}catch{return null;}}
 export async function saveToken(origin,token){const ciphertext=await dpapi(token);if(!ciphertext)return;await mkdir(path.dirname(secretFile),{recursive:true});await writeFile(secretFile,JSON.stringify({origin,ciphertext}),{mode:0o600});}
-export async function connectSite(url){
+export async function connectSite(url,{signal,launch=openBrowser}={}){
  const origin=new URL(url).origin,state=randomBytes(32).toString('hex');
  return new Promise((resolve,reject)=>{let timeout;const server=createServer(async(req,res)=>{
   if(req.method!=='POST'||req.url!=='/connect'||req.headers.origin!==origin){res.writeHead(403);res.end('Forbidden');return;}
@@ -22,6 +22,8 @@ export async function connectSite(url){
   const data=new URLSearchParams(body);if(data.get('state')!==state||!data.get('token')){res.writeHead(403);res.end('Invalid state');return;}
   const token=data.get('token');res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','Content-Security-Policy':"default-src 'none'; style-src 'unsafe-inline'"});res.end('<!doctype html><html lang="ru"><meta charset="utf-8"><title>Codex подключён</title><body style="font-family:system-ui;text-align:center;padding:80px;color:#27352a"><h1>Компьютер подключён</h1><p>Можно закрыть это окно и вернуться к доске.</p></body></html>');clearTimeout(timeout);server.close();try{await saveToken(origin,token);}catch{console.log('Подключение сохранено только на время этого запуска.');}resolve(token);
  });
- server.on('error',reject);server.listen(0,'127.0.0.1',()=>{const port=server.address().port;console.log('Подтвердите подключение компьютера в браузере.');openBrowser(`${origin}/connect?port=${port}&state=${state}`);timeout=setTimeout(()=>{server.close();reject(new Error('Подключение не подтверждено за 5 минут. Запустите агент ещё раз.'));},300000);});
+ const cancel=()=>{clearTimeout(timeout);server.close();reject(new Error('Connection cancelled.'));};if(signal?.aborted){cancel();return;}signal?.addEventListener('abort',cancel,{once:true});
+ server.on('close',()=>signal?.removeEventListener('abort',cancel));
+ server.on('error',reject);server.listen(0,'127.0.0.1',()=>{const port=server.address().port;console.log('Confirm the connection in your browser.');launch(`${origin}/connect?port=${port}&state=${state}`);timeout=setTimeout(()=>{server.close();reject(new Error('Connection was not confirmed within five minutes. Please retry.'));},300000);});
  });
 }

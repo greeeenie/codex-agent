@@ -24,12 +24,12 @@ test('a task uses the selected project and reports only after completion',async(
   assert.equal(c.calls.find(x=>x.method==='turn/start').params.sandboxPolicy.type,'workspaceWrite');
   await r.notification({method:'item/completed',params:{threadId:'thread-test',item:{type:'agentMessage',text:'Готово. Проверены тесты.'}}});
   await r.notification({method:'turn/completed',params:{threadId:'thread-test',turn:{status:'completed'}}});
-  assert.equal(r.reportPending.status,'review');assert.equal(r.reportPending.runId,'run-test');assert.equal(r.reportPending.result,'Готово. Проверены тесты.');
+  assert.equal(r.reportPending.status,'done');assert.equal(r.reportPending.runId,'run-test');assert.equal(r.reportPending.result,'Готово. Проверены тесты.');
  }finally{await rm(dir,{recursive:true,force:true});}
 });
 test('interrupted or failed turns never become done',async()=>{
  const c=new FakeCodex(),r=new Runner({projects:[]},c);r.uploadScreenshots=async()=>{};
- for(const status of ['interrupted','failed']){r.active={id:'t',runId:'r',threadId:'th',messages:[]};await r.notification({method:'turn/completed',params:{threadId:'th',turn:{status,error:{message:'Test error'}}}});assert.equal(r.reportPending.status,'review');assert.match(r.reportPending.result,status==='failed'?/Test error/:/остановлена/);}
+ for(const status of ['interrupted','failed']){r.active={id:'t',runId:'r',threadId:'th',messages:[]};await r.notification({method:'turn/completed',params:{threadId:'th',turn:{status,error:{message:'Test error'}}}});assert.equal(r.reportPending.status,'backlog');assert.match(r.reportPending.result,status==='failed'?/Test error/:/остановлена/);}
 });
 test('extra permissions are declined and the turn is interrupted',async()=>{
  const c=new FakeCodex(),r=new Runner({projects:[]},c);r.active={id:'t',threadId:'th',turnId:'tr'};await r.serverRequest({id:9,method:'item/commandExecution/requestApproval',params:{reason:'Need access'}});

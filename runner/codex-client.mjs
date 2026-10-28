@@ -3,15 +3,10 @@ import {createInterface} from 'node:readline';
 import {existsSync} from 'node:fs';
 import path from 'node:path';
 import {EventEmitter} from 'node:events';
+import {findCodex} from './find-codex.mjs';
 
 export function codexCommand(){
- if(process.env.CODEX_BINARY)return {command:process.env.CODEX_BINARY,args:[]};
- // Windows npm shims need a shell; launch the official JS entrypoint with Node instead.
- if(process.platform==='win32'){
-  let found=[];try{found=execFileSync('where.exe',['codex'],{encoding:'utf8',windowsHide:true}).trim().split(/\r?\n/);}catch{}
-  for(const shim of found){const entry=path.join(path.dirname(shim),'node_modules','@openai','codex','bin','codex.js');if(existsSync(entry))return {command:process.execPath,args:[entry]};}
-  throw new Error('Codex CLI не найден. Установите официальный @openai/codex или задайте CODEX_BINARY.');
- }return {command:'codex',args:[]};
+ return findCodex();
 }
 export class CodexClient extends EventEmitter{
  constructor(){super();this.id=0;this.pending=new Map();}
