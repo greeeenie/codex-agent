@@ -1,0 +1,5 @@
+.sites-runtime/
+.agent-board/
+node_modules/
+*.zip
+.env*

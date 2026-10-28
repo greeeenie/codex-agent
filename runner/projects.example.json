@@ -1,0 +1,6 @@
+{
+  "url": "https://YOUR-SITE.chatgpt.site",
+  "projects": [
+    {"id": "my-project", "name": "My project", "path": "C:/Projects/my-project", "host": "local"}
+  ]
+}
