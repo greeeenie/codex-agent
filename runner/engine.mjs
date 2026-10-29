@@ -117,7 +117,7 @@ export class Runner{
   if(this.active?.turnId)await this.client.call('turn/interrupt',{threadId:this.active.threadId,turnId:this.active.turnId}).catch(()=>{});
  }
  finish(status,result){if(!this.active)return;this.reportPending={action:'report',id:this.active.id,runId:this.active.runId,threadId:this.active.threadId,turnId:this.active.turnId,status,result};}
- async uploadScreenshots(text){const project=this.config.projects.find(p=>p.id===this.active.projectId);const root=await realpath(path.join(project.path,'.agent-board','results',this.active.id));
+ async uploadScreenshots(text){const root=await realpath(path.join(this.active.cwd,'.agent-board','results',this.active.id));
   for(const match of text.matchAll(/^SCREENSHOT:\s*(.+)$/gm)){
    try{const filename=await realpath(match[1].trim().replace(/^['"]|['"]$/g,'')),relative=path.relative(root,filename);
     if(relative.startsWith('..')||path.isAbsolute(relative)||!relative)continue;

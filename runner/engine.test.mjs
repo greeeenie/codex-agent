@@ -22,6 +22,7 @@ test('a task uses the selected project and reports only after completion',async(
   await r.execute({id:'task-test',projectId:'p',runId:'run-test',title:'A task',description:'Details'});
   assert.equal(r.reportPending,null);assert.equal(c.calls.find(x=>x.method==='thread/start').params.cwd,await import('node:fs/promises').then(fs=>fs.realpath(dir)));
   assert.equal(c.calls.find(x=>x.method==='turn/start').params.sandboxPolicy.type,'workspaceWrite');
+  r.config.projects=[]; // A project roster refresh must not invalidate the running task's cwd.
   await r.notification({method:'item/completed',params:{threadId:'thread-test',item:{type:'agentMessage',text:JSON.stringify({state:'done',message:'Готово. Проверены тесты.',screenshots:[]})}}});
   await r.notification({method:'turn/completed',params:{threadId:'thread-test',turn:{status:'completed'}}});
   assert.equal(r.reportPending.status,'done');assert.equal(r.reportPending.runId,'run-test');assert.equal(r.reportPending.result,'Готово. Проверены тесты.');
