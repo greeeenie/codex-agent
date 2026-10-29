@@ -2,6 +2,18 @@
 
 A small Windows companion for [Codex Hub](https://agent-board-stepan.readymars.chatgpt.site). It runs in the system tray and executes tasks using the **Codex app already installed on your computer**.
 
+This repository also includes the complete website source in [`site/`](site/).
+
+## Repository layout
+
+| Directory | Purpose |
+| --- | --- |
+| [`site/`](site/) | Codex Hub website, server routes, database schema, migrations, and build configuration |
+| [`runner/`](runner/) | Local task execution and Codex integration |
+| [`windows/`](windows/) | Native tray app and Windows installer sources |
+
+See the [website README](site/README.md) to run or build the web application.
+
 ## Install
 
 1. Download [Codex-Agent-Setup-x64.exe](https://github.com/greeeenie/codex-agent/releases/latest/download/Codex-Agent-Setup-x64.exe).
