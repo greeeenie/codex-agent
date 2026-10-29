@@ -8,6 +8,20 @@
       "when": 1793224527028,
       "tag": "0000_material_purple_man",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1793260330186,
+      "tag": "0001_adorable_black_knight",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1793266238721,
+      "tag": "0002_steady_venom",
+      "breakpoints": true
     }
   ]
 }

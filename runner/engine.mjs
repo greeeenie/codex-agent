@@ -4,6 +4,7 @@ import {CodexClient} from './codex-client.mjs';
 import {openBrowser} from './connect.mjs';
 import {status} from './desktop-status.mjs';
 import {discoverProjects} from './projects.mjs';
+import {taskResultSchema,readTaskResult} from './task-result.mjs';
 
 export class Runner{
  constructor(config,client=new CodexClient()){this.config=config;this.client=client;this.agent={account:null};this.active=null;this.reportPending=null;this.lastCommand=null;this.lastAccountRead=0;this.closed=false;}
@@ -21,8 +22,15 @@ export class Runner{
   if(account){delete this.agent.authUrl;delete this.agent.error;}
  }catch(e){this.agent.error=e.message;}}
  async recover(){const state=await this.request({action:'state'});const ids=new Set(this.config.projects.map(p=>p.id));
-  // A lost process is never called successful; preserve context and ask for review.
-  for(const t of state.tasks.filter(t=>t.status==='running'&&ids.has(t.projectId)))await this.request({action:'report',id:t.id,runId:t.runId,status:'backlog',result:'Связь с предыдущим запуском прервалась. Проверьте изменения в проекте и нажмите «Восстановить», чтобы продолжить с сохранённым контекстом.'});
+  // A persisted question is safe to resume: no model turn was running while waiting.
+  for(const t of state.tasks.filter(t=>t.status==='running'&&ids.has(t.projectId))){
+   if(t.question&&t.threadId&&!t.stopRequested&&!this.active){try{
+    const project=this.config.projects.find(p=>p.id===t.projectId),cwd=await realpath(project.path);
+    await this.client.call('thread/resume',{threadId:t.threadId,cwd,approvalPolicy:'on-request',sandbox:'workspace-write'});
+    this.active={...t,cwd,turnId:null,messages:[],waiting:{question:t.question,published:true}};continue;
+   }catch{/* Keep the saved context if it can no longer be resumed. */}}
+   await this.request({action:'report',id:t.id,runId:t.runId,status:'backlog',result:'Связь с предыдущим запуском прервалась. Проверьте изменения в проекте и нажмите «Восстановить», чтобы продолжить с сохранённым контекстом.'});
+  }
  }
  async tick(){
   if(this.closed)throw new Error('Codex отключился. Перезапустите локальный агент.');
@@ -30,7 +38,23 @@ export class Runner{
   const {command}=await this.request({action:'heartbeat',projects:this.config.projects,agent:this.agent});
   if(command?.type==='login'&&command.id!==this.lastCommand){this.lastCommand=command.id;const login=await this.client.call('account/login/start',{type:'chatgpt'});this.agent.authUrl=login.authUrl;await this.request({action:'heartbeat',projects:this.config.projects,agent:this.agent});}
   if(this.reportPending){await this.request(this.reportPending);this.reportPending=null;this.active=null;}
-  if(this.active){status('running','Codex is working on a task');const s=await this.request({action:'state'}),task=s.tasks.find(t=>t.id===this.active.id);if(task?.stopRequested&&this.active.turnId&&!this.active.interrupting){this.active.interrupting=true;await this.client.call('turn/interrupt',{threadId:this.active.threadId,turnId:this.active.turnId});}return;}
+  if(this.active){
+   const s=await this.request({action:'state'}),task=s.tasks.find(t=>t.id===this.active.id);
+   if(task?.stopRequested){
+    if(this.active.waiting){this.finish('backlog','Задача остановлена. Контекст сохранён.');return;}
+    if(this.active.turnId&&!this.active.interrupting){this.active.interrupting=true;await this.client.call('turn/interrupt',{threadId:this.active.threadId,turnId:this.active.turnId});}return;
+   }
+   if(this.active.waiting){
+    status('waiting-answer','Waiting for your answer on the board');
+    if(!this.active.waiting.published)await this.publishQuestion();
+    const q=task?.question;
+    if(q?.id===this.active.waiting?.question.id&&q.answer){
+     this.active.waiting=null;
+     try{await this.startTurn(`Ответ пользователя на вопрос «${q.prompt}»:\n${q.answer}\n\nПродолжи исходную задачу в том же проекте. Если нужен ещё один ответ, верни state=question. Иначе верни state=done с коротким результатом. Соблюдай прежние ограничения и JSON-схему.`);}catch(e){this.finish('backlog',`Не удалось продолжить задачу: ${e.message}`);}
+    }
+   }else status('running','Codex is working on a task');
+   return;
+  }
   if(!this.agent.account||this.agent.authUrl){status('signing-in','Sign in to Codex');return;}
   status(this.active?'running':this.config.projects.length?'ready':'waiting-projects','');
   const {task}=await this.request({action:'claim',projectIds:this.config.projects.map(p=>p.id)});if(task)await this.execute(task);
@@ -39,6 +63,7 @@ export class Runner{
   try{
    const project=this.config.projects.find(p=>p.id===task.projectId);if(!project)throw new Error('Проект не разрешён на этом компьютере');
    const cwd=await realpath(project.path);if(!(await stat(cwd)).isDirectory())throw new Error('Папка проекта не найдена');
+   this.active.cwd=cwd;
    let thread;
    const threadParams={cwd,approvalPolicy:'on-request',sandbox:'workspace-write'};
    if(task.threadId){try{thread=await this.client.call('thread/resume',{...threadParams,threadId:task.threadId});}catch{thread=await this.client.call('thread/start',threadParams);}}
@@ -46,24 +71,39 @@ export class Runner{
    this.active.threadId=thread.thread.id;
    // Only this task's final report and actual image paths are retained; no activity feed.
    const outputDir=path.join(cwd,'.agent-board','results',task.id);await mkdir(outputDir,{recursive:true});
-   const prompt=`Выполни задачу в выбранном проекте.\n\n${task.title}\n\n${task.description}\n\nПроверь результат. Не отправляй сообщения другим людям и не публикуй изменения без явного указания в задаче. Сохраняй существующие изменения пользователя. Если задача требует уточнения или дополнительного разрешения, явно сообщи об этом и остановись. В итоговом ответе дай не больше трёх коротких предложений: что сделано, как проверено, что осталось. Если есть доступный способ снять реальный скриншот результата, сохрани PNG/JPEG/WebP внутри ${outputDir} и укажи абсолютный путь в отдельной строке SCREENSHOT: <путь>. Не создавай картинку вместо реального скриншота. Если визуального результата нет, скриншот не нужен.`;
-   const turn=await this.client.call('turn/start',{threadId:this.active.threadId,input:[{type:'text',text:prompt}],cwd,approvalPolicy:'on-request',sandboxPolicy:{type:'workspaceWrite',writableRoots:[cwd],networkAccess:false},summary:'concise'});
-   if(!this.active)return;this.active.turnId=turn.turn.id;
-   await this.request({action:'report',id:task.id,runId:task.runId,threadId:this.active.threadId,turnId:this.active.turnId});
+   const prompt=`Выполни задачу в выбранном проекте.\n\n${task.title}\n\n${task.description}\n\nПроверь результат. Не отправляй сообщения другим людям и не публикуй изменения без явного указания в задаче. Сохраняй существующие изменения пользователя. Если без уточнения нельзя продолжить, заверши текущий ход JSON-объектом со state="question", одним коротким вопросом в message и пустым screenshots. Дождись ответа пользователя следующим сообщением. Не отмечай невыясненную задачу готовой. При завершении верни state="done", message не более трёх коротких предложений: что сделано, как проверено, что осталось. Если можно снять реальный скриншот результата, сохрани PNG/JPEG/WebP внутри ${outputDir} и помести абсолютный путь в screenshots. Не создавай картинку вместо реального скриншота. Если визуального результата нет, screenshots должен быть пустым массивом. Вопрос и итоговый отчёт возвращай строго по JSON-схеме, без markdown.`;
+   await this.startTurn(prompt);
   }catch(e){this.finish('backlog',`Не удалось выполнить задачу: ${e.message}`);}
+ }
+ async startTurn(prompt){
+  const active=this.active;active.messages=[];active.finalText=null;
+  const cwd=active.cwd;
+  const turn=await this.client.call('turn/start',{threadId:active.threadId,input:[{type:'text',text:prompt}],cwd,approvalPolicy:'on-request',sandboxPolicy:{type:'workspaceWrite',writableRoots:[cwd],networkAccess:false},summary:'concise',outputSchema:taskResultSchema});
+  if(this.active!==active)return;active.turnId=turn.turn.id;
+  await this.request({action:'report',id:active.id,runId:active.runId,threadId:active.threadId,turnId:active.turnId});
+ }
+ async publishQuestion(){
+  const waiting=this.active?.waiting;if(!waiting||waiting.published)return;
+  await this.request({action:'question',id:this.active.id,runId:this.active.runId,question:{id:waiting.question.id,prompt:waiting.question.prompt}});
+  waiting.published=true;
  }
  async notification(m){const p=m.params??{};
   if(m.method==='account/updated'||m.method==='account/login/completed'){await this.refreshAccount();return;}
   if(m.method==='account/rateLimits/updated'){this.agent.rateLimits=p.rateLimits??p;return;}
   if(!this.active||p.threadId!==this.active.threadId)return;
-  if(m.method==='item/completed'&&p.item?.type==='agentMessage')this.active.messages.push(p.item.text??'');
+  if(m.method==='item/completed'&&p.item?.type==='agentMessage'&&p.item.phase!=='commentary'){this.active.messages.push(p.item.text??'');if(p.item.phase==='finalAnswer')this.active.finalText=p.item.text;}
   if(m.method==='turn/started')this.active.turnId=p.turn.id;
   if(m.method==='turn/completed'){
-   const text=this.active.messages.join('\n').trim();
-   await this.uploadScreenshots(text);
-   const summary=text.replace(/^SCREENSHOT:.*$/gm,'').trim().slice(0,11500);
+   const text=(this.active.finalText??this.active.messages.at(-1)??'').trim();
    const status=p.turn?.status;
-   this.finish(status==='completed'?'done':'backlog',status==='completed'?(summary||'Codex завершил работу. Проверьте изменения в проекте.'):status==='interrupted'?`Задача остановлена. ${this.active.blockReason??'Частичные изменения сохранены в проекте.'}`:`Ошибка выполнения: ${p.turn?.error?.message??status??'неизвестная ошибка'}`);
+   if(status!=='completed'){this.finish('backlog',status==='interrupted'?`Задача остановлена. ${this.active.blockReason??'Частичные изменения сохранены в проекте.'}`:`Ошибка выполнения: ${p.turn?.error?.message??status??'неизвестная ошибка'}`);return;}
+   let result;try{result=readTaskResult(text);}catch{this.finish('backlog','Не удалось прочитать результат Codex. Контекст и изменения сохранены.');return;}
+   if(result.state==='question'){
+    this.active.turnId=null;this.active.waiting={question:{id:crypto.randomUUID(),prompt:result.message,answer:null},published:false};
+    await this.publishQuestion();return;
+   }
+   await this.uploadScreenshots(result.screenshots.map(p=>`SCREENSHOT: ${p}`).join('\n'));
+   this.finish('done',result.message);
   }
  }
  async serverRequest(m){
@@ -89,8 +129,9 @@ export class Runner{
   }
  }
  async stop(){
+  if(this.active?.waiting&&!this.active.waiting.published)await this.publishQuestion().catch(()=>{});
   if(this.active?.turnId)await this.client.call('turn/interrupt',{threadId:this.active.threadId,turnId:this.active.turnId}).catch(()=>{});
-  if(this.active)await this.request(this.reportPending??{action:'report',id:this.active.id,runId:this.active.runId,threadId:this.active.threadId,status:'backlog',result:'Задача остановлена. Изменения сохранены в проекте.'}).catch(()=>{});
+  if(this.active&&(!this.active.waiting?.published||this.reportPending))await this.request(this.reportPending??{action:'report',id:this.active.id,runId:this.active.runId,threadId:this.active.threadId,status:'backlog',result:'Задача остановлена. Изменения сохранены в проекте.'}).catch(()=>{});
   this.client.close();
  }
 }

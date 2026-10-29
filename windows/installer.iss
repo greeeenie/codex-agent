@@ -1,5 +1,5 @@
 #define AppName "Codex Agent"
-#define AppVersion "0.2.0"
+#define AppVersion "0.3.0"
 [Setup]
 AppId={{9B346F73-0D59-4D48-96F4-9A9CD67102DC}
 AppName={#AppName}
@@ -25,7 +25,7 @@ WizardStyle=modern
 CloseApplications=yes
 RestartApplications=no
 AppMutex=CodexAgentInstaller
-VersionInfoVersion=0.2.0.0
+VersionInfoVersion=0.3.0.0
 DisableWelcomePage=no
 DisableReadyPage=yes
 UninstallDisplayName=Codex Agent

@@ -11,8 +11,8 @@ using Microsoft.Win32;
 
 [assembly: System.Reflection.AssemblyTitle("Codex Agent")]
 [assembly: System.Reflection.AssemblyDescription("Local agent for Codex Hub")]
-[assembly: System.Reflection.AssemblyVersion("0.2.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("0.2.0.0")]
+[assembly: System.Reflection.AssemblyVersion("0.3.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("0.3.0.0")]
 internal static class Program {
  internal const string BoardUrl="https://agent-board-stepan.readymars.chatgpt.site/";
  internal static string Root=AppDomain.CurrentDomain.BaseDirectory;
@@ -45,13 +45,12 @@ internal sealed class TrayContext:ApplicationContext,IDisposable {
  readonly EventWaitHandle quit;Process worker;IntPtr job;bool exiting;bool workerError;string currentStatus="Подключаемся…";readonly bool preview;
  public TrayContext(EventWaitHandle quit,bool autoStart,bool preview){
   this.quit=quit;this.preview=preview;Directory.CreateDirectory(Program.Data);
-  window=new Form{Text="Codex Agent",ClientSize=new Size(410,278),StartPosition=FormStartPosition.CenterScreen,FormBorderStyle=FormBorderStyle.FixedDialog,MaximizeBox=false,BackColor=Color.FromArgb(251,252,250),Font=new Font("Segoe UI",10),Icon=Icon.ExtractAssociatedIcon(Application.ExecutablePath)};
+  window=new Form{Text="Codex Agent",ClientSize=new Size(410,225),StartPosition=FormStartPosition.CenterScreen,FormBorderStyle=FormBorderStyle.FixedDialog,MaximizeBox=false,BackColor=Color.FromArgb(251,252,250),Font=new Font("Segoe UI",10),Icon=Icon.ExtractAssociatedIcon(Application.ExecutablePath)};
   var title=new Label{Text="Codex Agent",Location=new Point(29,27),AutoSize=true,Font=new Font("Segoe UI",19,FontStyle.Bold),ForeColor=Color.FromArgb(30,35,41)};
   statusLabel=new Label{Text=currentStatus,Location=new Point(31,82),Size=new Size(348,58),ForeColor=Color.FromArgb(106,115,119)};
   var open=new Button{Text="Открыть доску",Location=new Point(31,154),Size=new Size(230,40),BackColor=Color.FromArgb(31,35,41),ForeColor=Color.White,FlatStyle=FlatStyle.Flat};open.FlatAppearance.BorderSize=0;open.Click+=(s,e)=>Program.Open(Program.BoardUrl);
   var retry=new Button{Text="Повторить",Location=new Point(271,154),Size=new Size(107,40),FlatStyle=FlatStyle.Flat};retry.FlatAppearance.BorderColor=Color.FromArgb(220,224,225);retry.Click+=(s,e)=>Restart();
-  var footer=new Label{Text="Работает в фоне. Закройте окно — агент останется в трее.",Location=new Point(31,215),Size=new Size(350,40),Font=new Font("Segoe UI",8),ForeColor=Color.FromArgb(146,154,157)};
-  window.Controls.AddRange(new Control[]{title,statusLabel,open,retry,footer});
+  window.Controls.AddRange(new Control[]{title,statusLabel,open,retry});
   IntPtr handle=window.Handle;
   window.FormClosing+=(s,e)=>{if(!exiting&&e.CloseReason==CloseReason.UserClosing){e.Cancel=true;window.Hide();}};
   var menu=new ContextMenuStrip();statusItem=new ToolStripMenuItem(currentStatus){Enabled=false};menu.Items.Add(statusItem);menu.Items.Add(new ToolStripSeparator());
@@ -72,7 +71,7 @@ internal sealed class TrayContext:ApplicationContext,IDisposable {
   job=Native.CreateKillJob();worker.Start();Native.Attach(job,worker.Handle);worker.BeginOutputReadLine();worker.BeginErrorReadLine();
  }catch(Exception e){StopWorker();UpdateStatus("Не удалось запустить агент. Нажмите «Повторить».");Log(e.Message);}}
  void HandleOutput(string line){if(String.IsNullOrWhiteSpace(line))return;try{var value=new JavaScriptSerializer().Deserialize<System.Collections.Generic.Dictionary<string,object>>(line);object kind,state;if(!value.TryGetValue("event",out kind)||kind.ToString()!="status"||!value.TryGetValue("state",out state))return;
-  string message;switch(state.ToString()){case "ready":message="Агент готов к работе.";break;case "running":message="Codex выполняет задачу.";break;case "pairing":message="Подтвердите подключение в открывшемся браузере.";break;case "signing-in":message="Войдите в Codex в открывшемся браузере.";break;case "waiting-projects":message="Откройте проект в Codex. Агент подключит его автоматически.";break;case "missing-codex":workerError=true;message="Откройте установленный Codex и нажмите «Повторить».";break;case "error":workerError=true;message="Не удалось подключиться. Проверьте интернет и нажмите «Повторить».";break;default:message="Подключаемся…";break;}Ui(()=>UpdateStatus(message));
+  string message;switch(state.ToString()){case "ready":message="Агент готов к работе.";break;case "running":message="Codex выполняет задачу.";break;case "waiting-answer":message="Ответьте на вопрос в карточке задачи.";break;case "pairing":message="Подтвердите подключение в открывшемся браузере.";break;case "signing-in":message="Войдите в Codex в открывшемся браузере.";break;case "waiting-projects":message="Откройте проект в Codex. Агент подключит его автоматически.";break;case "missing-codex":workerError=true;message="Откройте установленный Codex и нажмите «Повторить».";break;case "error":workerError=true;message="Не удалось подключиться. Проверьте интернет и нажмите «Повторить».";break;default:message="Подключаемся…";break;}Ui(()=>UpdateStatus(message));
  }catch{Log(line);}}
  void Log(string message){try{File.AppendAllText(Path.Combine(Program.Data,"agent.log"),DateTime.UtcNow.ToString("s")+" "+message+Environment.NewLine);}catch{}}
  void Restart(){if(preview)return;StopWorker();StartWorker();}
