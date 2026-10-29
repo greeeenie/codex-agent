@@ -70,3 +70,5 @@ When a task needs input, its card shows a waiting indicator. Open the card, answ
 Projects removed from Codex disappear from the board after the next project sync. Recreated project IDs for the same local directory are merged, preserving all task history. You can also remove a project from the picker and undo that removal. Removing a project from the board does not delete its local files.
 
 Task conversations are attached to the matching Codex desktop project when created. Restored tasks and pending questions retain their project assignment. Projects are resolved from the desktop identity mapping and verified against their local directory; missing or ambiguous projects do not start model work.
+
+Codex conversations use their board card titles. The initial prompt includes the task text once, followed by concise execution and reporting instructions.

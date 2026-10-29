@@ -22,6 +22,8 @@ test('a task uses the selected project and reports only after completion',async(
   await r.execute({id:'task-test',projectId:'p',runId:'run-test',title:'A task',description:'Details'});
   assert.equal(r.reportPending,null);assert.equal(c.calls.find(x=>x.method==='thread/start').params.projectId,'codex-p');assert.equal(c.calls.find(x=>x.method==='thread/start').params.cwd,await import('node:fs/promises').then(fs=>fs.realpath(dir)));
   assert.equal(c.calls.find(x=>x.method==='turn/start').params.sandboxPolicy.type,'workspaceWrite');
+  assert.deepEqual(c.calls.find(x=>x.method==='thread/name/set').params,{threadId:'thread-test',name:'A task'});
+  assert.ok(c.calls.findIndex(x=>x.method==='thread/name/set')<c.calls.findIndex(x=>x.method==='turn/start'));
   r.config.projects=[]; // A project roster refresh must not invalidate the running task's cwd.
   await r.notification({method:'item/completed',params:{threadId:'thread-test',item:{type:'agentMessage',text:JSON.stringify({state:'done',message:'Готово. Проверены тесты.',screenshots:[]})}}});
   await r.notification({method:'turn/completed',params:{threadId:'thread-test',turn:{status:'completed'}}});
@@ -59,8 +61,8 @@ test('stopping a waiting task starts no model turn and returns it to backlog',as
 
 test('a persisted question resumes after restart without starting work before an answer',async()=>{
  const dir=await mkdtemp(path.join(os.tmpdir(),'agent-recover-test-'));
- try{const c=new FakeCodex(),r=new Runner({projects:[{id:'p',path:dir}]},c);c.projectPath=dir;r.lastAccountRead=Date.now();const task={id:'t',projectId:'p',runId:'r',threadId:'th',status:'running',question:{id:'q',prompt:'Color?',answer:null}};r.request=async()=>({tasks:[task]});
-  await r.recover();await r.tick();assert.equal(c.calls.filter(x=>x.method==='turn/start').length,0);assert.equal(r.active.waiting.question.id,'q');
+ try{const c=new FakeCodex(),r=new Runner({projects:[{id:'p',path:dir}]},c);c.projectPath=dir;r.lastAccountRead=Date.now();const task={id:'t',projectId:'p',runId:'r',threadId:'th',title:'Saved question',status:'running',question:{id:'q',prompt:'Color?',answer:null}};r.request=async()=>({tasks:[task]});
+  await r.recover();await r.tick();assert.equal(c.calls.filter(x=>x.method==='turn/start').length,0);assert.equal(r.active.waiting.question.id,'q');assert.deepEqual(c.calls.find(c=>c.method==='thread/name/set').params,{threadId:'th',name:'Saved question'});
   task.question.answer='Black';await r.tick();assert.equal(c.calls.filter(x=>x.method==='thread/resume').length,1);assert.equal(c.calls.find(x=>x.method==='turn/start').params.threadId,'th');
  }finally{await rm(dir,{recursive:true,force:true});}
 });
@@ -80,6 +82,7 @@ test('restoring a task assigns its existing chat before starting another turn',a
   await r.execute({id:'t',projectId:'p',runId:'r',threadId:'saved-chat',title:'Continue',description:''});
   assert.equal(c.calls.filter(c=>c.method==='thread/start').length,0);
   assert.deepEqual(c.calls.find(c=>c.method==='thread/metadata/update').params,{threadId:'saved-chat',projectId:'codex-p'});
+  assert.deepEqual(c.calls.find(c=>c.method==='thread/name/set').params,{threadId:'saved-chat',name:'Continue'});
   assert.ok(c.calls.findIndex(c=>c.method==='thread/metadata/update')<c.calls.findIndex(c=>c.method==='turn/start'));
  }finally{await rm(dir,{recursive:true,force:true});}
 });
@@ -89,6 +92,14 @@ test('a missing Codex project does not start model work',async()=>{
  try{const c=new FakeCodex(),r=new Runner({projects:[{id:'p',path:dir}]},c);r.request=async()=>({});const original=c.call.bind(c);c.call=async(method,params)=>method==='project/list'?{data:[],nextCursor:null}:original(method,params);
   await r.execute({id:'t',projectId:'p',runId:'r',title:'Task',description:''});
   assert.equal(c.calls.filter(c=>c.method==='turn/start').length,0);assert.equal(r.reportPending.status,'backlog');assert.match(r.reportPending.result,/не найден/);
+ }finally{await rm(dir,{recursive:true,force:true});}
+});
+
+test('a single-field task is sent once without losing its full instructions',async()=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'agent-prompt-test-'));
+ try{const c=new FakeCodex(),r=new Runner({projects:[{id:'p',path:dir}]},c);c.projectPath=dir;r.request=async()=>({});const title='Поменять цвет кнопки',description=title+'\nОставить размер и поведение без изменений.';
+  await r.execute({id:'t',projectId:'p',runId:'r',title,description});const prompt=c.calls.find(c=>c.method==='turn/start').params.input[0].text;
+  assert.ok(prompt.startsWith(description));assert.equal(prompt.split(title).length-1,1);assert.deepEqual(c.calls.find(c=>c.method==='thread/name/set').params,{threadId:'thread-test',name:title});
  }finally{await rm(dir,{recursive:true,force:true});}
 });
 test('interrupted or failed turns never become done',async()=>{

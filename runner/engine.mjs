@@ -29,6 +29,7 @@ export class Runner{
     const projectId=await resolveCodexProject(this.client,project,cwd);
     await this.client.call('thread/resume',{threadId:t.threadId,cwd,approvalPolicy:'on-request',sandbox:'workspace-write'});
     await this.client.call('thread/metadata/update',{threadId:t.threadId,projectId});
+    await this.client.call('thread/name/set',{threadId:t.threadId,name:t.title});
     this.active={...t,cwd,turnId:null,messages:[],waiting:{question:t.question,published:true}};continue;
    }catch{/* Keep the saved context if it can no longer be resumed. */}}
    await this.request({action:'report',id:t.id,runId:t.runId,status:'backlog',result:'Связь с предыдущим запуском прервалась. Проверьте изменения в проекте и нажмите «Восстановить», чтобы продолжить с сохранённым контекстом.'});
@@ -73,9 +74,11 @@ export class Runner{
     await this.client.call('thread/metadata/update',{threadId:thread.thread.id,projectId});
    }else thread=await this.client.call('thread/start',{...threadParams,projectId});
    this.active.threadId=thread.thread.id;
+   await this.client.call('thread/name/set',{threadId:this.active.threadId,name:task.title});
    // Only this task's final report and actual image paths are retained; no activity feed.
    const outputDir=path.join(cwd,'.agent-board','results',task.id);await mkdir(outputDir,{recursive:true});
-   const prompt=`Выполни задачу в выбранном проекте.\n\n${task.title}\n\n${task.description}\n\nПроверь результат. Не отправляй сообщения другим людям и не публикуй изменения без явного указания в задаче. Сохраняй существующие изменения пользователя. Если без уточнения нельзя продолжить, заверши текущий ход JSON-объектом со state="question", одним коротким вопросом в message и пустым screenshots. Дождись ответа пользователя следующим сообщением. Не отмечай невыясненную задачу готовой. При завершении верни state="done", message не более трёх коротких предложений: что сделано, как проверено, что осталось. Если можно снять реальный скриншот результата, сохрани PNG/JPEG/WebP внутри ${outputDir} и помести абсолютный путь в screenshots. Не создавай картинку вместо реального скриншота. Если визуального результата нет, screenshots должен быть пустым массивом. Вопрос и итоговый отчёт возвращай строго по JSON-схеме, без markdown.`;
+   const description=task.description.trim(),text=description.startsWith(task.title)?description:[task.title,description].filter(Boolean).join('\n\n');
+   const prompt=`${text}\n\nВыполни и проверь задачу. Не затирай изменения пользователя. Не отправляй сообщения людям и не публикуй без явного указания.\nОтвет по JSON-схеме: если нужно уточнение — state=question, message=один вопрос, screenshots=[]; жди ответа. После завершения — state=done, message=итог, проверка и что осталось (до 3 коротких предложений).\nscreenshots: пути реальных PNG/JPEG/WebP внутри ${outputDir}; без визуального результата — []. Не заменяй скриншот сгенерированной картинкой.`;
    await this.startTurn(prompt);
   }catch(e){this.finish('backlog',`Не удалось выполнить задачу: ${e.message}`);}
  }
