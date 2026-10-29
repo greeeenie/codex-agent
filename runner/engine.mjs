@@ -129,11 +129,25 @@ export class Runner{
    if(task.model){const model=this.agent.models?.find(m=>m.id===task.model);if(!model)throw new Error('Выбранная модель недоступна в установленном Codex');if(task.effort&&!model.efforts.includes(task.effort))throw new Error('Выбранная глубина рассуждения недоступна');}
    const attachments=await prepareAttachments(task,cwd,this.config);this.active.imageInputs=attachments.images;
    const threadParams={cwd,approvalPolicy:'on-request',sandbox:'workspace-write',...(task.model?{model:task.model}:{})};
-   // A failed resume must not silently discard the previous conversation.
-   if(task.threadId){const {thread:previous}=await this.client.call('thread/read',{threadId:task.threadId,includeTurns:false});const oldCwd=previous?.cwd?await realpath(previous.cwd):null;const normalized=value=>process.platform==='win32'?value.toLowerCase():value;if(!oldCwd||normalized(oldCwd)!==normalized(cwd))throw new Error('Связанный чат принадлежит другой папке проекта. Исправьте связь перед продолжением.');}
-   const thread=task.threadId?await this.client.call('thread/resume',{...threadParams,threadId:task.threadId}):await this.client.call('thread/start',{...threadParams,projectId});
+   let resumeThreadId=task.threadId;
+   // Replace only a recorded startup failure that never reached a turn, not a lost conversation.
+   if(resumeThreadId){
+    let previous;
+    try{previous=(await this.client.call('thread/read',{threadId:resumeThreadId,includeTurns:false})).thread;}
+    catch(e){
+     if(!e.message.includes(resumeThreadId)||!/no rollout found for thread id|thread not loaded:/.test(e.message))throw e;
+     const work=await this.request({action:'heartbeat',projects:this.config.projects,agent:this.agent,runnerId:this.runnerId,capabilities});
+     const attempts=(work.work?.find(t=>t.id===task.id)?.runs??[]).filter(r=>r.threadId===resumeThreadId);
+     if(!attempts.some(r=>r.status==='error'&&!r.turnId&&r.result?.includes('failed to read thread metadata: invalid thread-store request: no rollout found for thread id '+resumeThreadId))||attempts.some(r=>r.turnId))throw new Error('Сохранённый чат Codex недоступен. Свяжите другой чат или создайте копию задачи. История попыток сохранена.');
+     resumeThreadId=null;this.queueEvent('activity','Создан новый чат: предыдущая попытка завершилась до начала работы.');
+    }
+    if(resumeThreadId){const oldCwd=previous?.cwd?await realpath(previous.cwd):null;const normalized=value=>process.platform==='win32'?value.toLowerCase():value;if(!oldCwd||normalized(oldCwd)!==normalized(cwd))throw new Error('Связанный чат принадлежит другой папке проекта. Исправьте связь перед продолжением.');}
+   }
+   const thread=resumeThreadId?await this.client.call('thread/resume',{...threadParams,threadId:resumeThreadId,excludeTurns:true}):await this.client.call('thread/start',{...threadParams,projectId});
    this.active.threadId=thread.thread.id;await this.persist();
-   await this.client.call('thread/metadata/update',{threadId:thread.thread.id,projectId});await this.client.call('thread/name/set',{threadId:thread.thread.id,name:task.title});
+   // New threads already receive projectId at creation; their rollout may not exist yet.
+   if(resumeThreadId&&thread.thread.projectId!==projectId)await this.client.call('thread/metadata/update',{threadId:thread.thread.id,projectId});
+   await this.client.call('thread/name/set',{threadId:thread.thread.id,name:task.title});
    await this.request({action:'report',id:task.id,runId:task.runId,threadId:thread.thread.id});
    const work=await this.request({action:'heartbeat',projects:this.config.projects,agent:this.agent,runnerId:this.runnerId,capabilities});
    const events=work.work?.find(t=>t.id===task.id)?.events??[];

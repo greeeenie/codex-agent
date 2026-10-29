@@ -62,3 +62,43 @@ test('late turn notifications and requests cannot change the active attempt',asy
  await r.serverRequest({id:3,method:'item/commandExecution/requestApproval',params:{threadId:'th',turnId:'old-turn'}});
  assert.equal(r.reportPending,null);assert.equal(r.active.interactions.length,0);assert.equal(c.replies.length,0);
 });
+
+test('a fresh thread starts work without reading unpersisted metadata',async()=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'agent-startup-test-'));
+ try{const c=new FakeCodex(),call=c.call.bind(c);c.cwd=dir;c.call=async(method,params)=>{if(method==='thread/metadata/update')throw new Error('no rollout found');return call(method,params);};
+  const r=new Runner({projects:[{id:'p',path:dir}]},c);r.request=async()=>({});
+  await r.execute({id:'t',runId:'r',projectId:'p',title:'Task'});
+  assert.equal(r.reportPending,null);assert.equal(c.calls.find(x=>x.method==='thread/start').params.projectId,'p');
+  assert.equal(c.calls.find(x=>x.method==='thread/name/set').params.name,'Task');assert.ok(c.calls.some(x=>x.method==='turn/start'));
+ }finally{await rm(dir,{recursive:true,force:true});}
+});
+
+test('retry replaces only a missing thread with a recorded failure before its first turn',async()=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'agent-retry-test-'));
+ try{const c=new FakeCodex(),call=c.call.bind(c);c.cwd=dir;c.call=async(method,params)=>{if(method==='thread/read')throw new Error('thread not loaded: missing');return call(method,params);};
+  const r=new Runner({projects:[{id:'p',path:dir}]},c);r.request=async()=>({work:[{id:'t',runs:[{threadId:'missing',status:'error',turnId:null,result:'Не удалось выполнить задачу: failed to read thread metadata: invalid thread-store request: no rollout found for thread id missing'}]}]});
+  await r.execute({id:'t',runId:'new-run',projectId:'p',threadId:'missing',title:'Task'});
+  assert.equal(r.reportPending,null);assert.equal(r.active.threadId,'thread-test');assert.ok(c.calls.some(x=>x.method==='turn/start'));
+  assert.equal(c.calls.some(x=>x.method==='thread/resume'),false);assert.ok(r.events.some(e=>e.type==='activity'&&e.runId==='new-run'));
+ }finally{await rm(dir,{recursive:true,force:true});}
+});
+
+test('missing conversations with prior work or no startup evidence are never silently replaced',async()=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'agent-context-test-'));
+ try{for(const runs of [[],[{threadId:'missing',status:'error',turnId:'previous-turn',result:'failed to read thread metadata: invalid thread-store request: no rollout found for thread id missing'}]]){
+  const c=new FakeCodex(),call=c.call.bind(c);c.cwd=dir;c.call=async(method,params)=>{if(method==='thread/read')throw new Error('thread not loaded: missing');return call(method,params);};
+  const r=new Runner({projects:[{id:'p',path:dir}]},c);r.request=async()=>({work:[{id:'t',runs}]});
+  await r.execute({id:'t',runId:'r',projectId:'p',threadId:'missing',title:'Task'});
+  assert.equal(r.reportPending.status,'error');assert.match(r.reportPending.result,/История попыток сохранена/);assert.equal(c.calls.some(x=>x.method==='thread/start'||x.method==='turn/start'),false);
+ }}finally{await rm(dir,{recursive:true,force:true});}
+});
+
+test('an existing chat resumes in its project without a redundant metadata update',async()=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'agent-resume-test-'));
+ try{const c=new FakeCodex(),call=c.call.bind(c);c.cwd=dir;c.call=async(method,params)=>{if(method==='thread/read'||method==='thread/resume'){c.calls.push({method,params});return {thread:{id:'existing',cwd:dir,projectId:'p'}};}return call(method,params);};
+  const r=new Runner({projects:[{id:'p',path:dir}]},c);r.request=async()=>({});
+  await r.execute({id:'t',runId:'r',projectId:'p',threadId:'existing',title:'Task'});
+  assert.equal(r.reportPending,null);assert.equal(c.calls.some(x=>x.method==='thread/start'||x.method==='thread/metadata/update'),false);
+  assert.equal(c.calls.find(x=>x.method==='thread/resume').params.excludeTurns,true);assert.equal(c.calls.find(x=>x.method==='turn/start').params.threadId,'existing');
+ }finally{await rm(dir,{recursive:true,force:true});}
+});
