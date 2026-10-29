@@ -3,7 +3,7 @@ import path from 'node:path';
 import {CodexClient} from './codex-client.mjs';
 import {openBrowser} from './connect.mjs';
 import {status} from './desktop-status.mjs';
-import {discoverProjects} from './projects.mjs';
+import {discoverProjects,resolveCodexProject} from './projects.mjs';
 import {taskResultSchema,readTaskResult} from './task-result.mjs';
 
 export class Runner{
@@ -26,7 +26,9 @@ export class Runner{
   for(const t of state.tasks.filter(t=>t.status==='running'&&ids.has(t.projectId))){
    if(t.question&&t.threadId&&!t.stopRequested&&!this.active){try{
     const project=this.config.projects.find(p=>p.id===t.projectId),cwd=await realpath(project.path);
+    const projectId=await resolveCodexProject(this.client,project,cwd);
     await this.client.call('thread/resume',{threadId:t.threadId,cwd,approvalPolicy:'on-request',sandbox:'workspace-write'});
+    await this.client.call('thread/metadata/update',{threadId:t.threadId,projectId});
     this.active={...t,cwd,turnId:null,messages:[],waiting:{question:t.question,published:true}};continue;
    }catch{/* Keep the saved context if it can no longer be resumed. */}}
    await this.request({action:'report',id:t.id,runId:t.runId,status:'backlog',result:'Связь с предыдущим запуском прервалась. Проверьте изменения в проекте и нажмите «Восстановить», чтобы продолжить с сохранённым контекстом.'});
@@ -63,11 +65,13 @@ export class Runner{
   try{
    const project=this.config.projects.find(p=>p.id===task.projectId);if(!project)throw new Error('Проект не разрешён на этом компьютере');
    const cwd=await realpath(project.path);if(!(await stat(cwd)).isDirectory())throw new Error('Папка проекта не найдена');
+   const projectId=await resolveCodexProject(this.client,project,cwd);
    this.active.cwd=cwd;
    let thread;
    const threadParams={cwd,approvalPolicy:'on-request',sandbox:'workspace-write'};
-   if(task.threadId){try{thread=await this.client.call('thread/resume',{...threadParams,threadId:task.threadId});}catch{thread=await this.client.call('thread/start',threadParams);}}
-   else thread=await this.client.call('thread/start',threadParams);
+   if(task.threadId){try{thread=await this.client.call('thread/resume',{...threadParams,threadId:task.threadId});}catch{thread=await this.client.call('thread/start',{...threadParams,projectId});}
+    await this.client.call('thread/metadata/update',{threadId:thread.thread.id,projectId});
+   }else thread=await this.client.call('thread/start',{...threadParams,projectId});
    this.active.threadId=thread.thread.id;
    // Only this task's final report and actual image paths are retained; no activity feed.
    const outputDir=path.join(cwd,'.agent-board','results',task.id);await mkdir(outputDir,{recursive:true});

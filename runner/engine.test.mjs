@@ -8,7 +8,7 @@ import {Runner} from './engine.mjs';
 class FakeCodex extends EventEmitter{
  constructor(){super();this.calls=[];this.replies=[];}
  async start(){}
- async call(method,params){this.calls.push({method,params});if(method==='account/read')return {account:{type:'chatgpt',planType:'plus'}};if(method==='account/rateLimits/read')return {rateLimits:{primary:{usedPercent:42}}};if(method==='thread/start')return {thread:{id:'thread-test'}};if(method==='turn/start')return {turn:{id:'turn-test'}};return {};}
+ async call(method,params){this.calls.push({method,params});if(method==='project/list')return {data:[{id:'codex-p',roots:[{path:this.projectPath}]}],nextCursor:null};if(method==='account/read')return {account:{type:'chatgpt',planType:'plus'}};if(method==='account/rateLimits/read')return {rateLimits:{primary:{usedPercent:42}}};if(method==='thread/start')return {thread:{id:'thread-test'}};if(method==='turn/start')return {turn:{id:'turn-test'}};return {};}
  reply(id,result){this.replies.push({id,result});}send(){}close(){}
 }
 test('queue polling does not start an inference turn when empty or signed out',async()=>{
@@ -18,9 +18,9 @@ test('queue polling does not start an inference turn when empty or signed out',a
 });
 test('a task uses the selected project and reports only after completion',async()=>{
  const dir=await mkdtemp(path.join(os.tmpdir(),'agent-board-test-'));
- try{const c=new FakeCodex(),r=new Runner({url:'https://example.test',token:'test',projects:[{id:'p',path:dir}]},c);r.request=async()=>({});
+ try{const c=new FakeCodex(),r=new Runner({url:'https://example.test',token:'test',projects:[{id:'p',path:dir}]},c);c.projectPath=dir;r.request=async()=>({});
   await r.execute({id:'task-test',projectId:'p',runId:'run-test',title:'A task',description:'Details'});
-  assert.equal(r.reportPending,null);assert.equal(c.calls.find(x=>x.method==='thread/start').params.cwd,await import('node:fs/promises').then(fs=>fs.realpath(dir)));
+  assert.equal(r.reportPending,null);assert.equal(c.calls.find(x=>x.method==='thread/start').params.projectId,'codex-p');assert.equal(c.calls.find(x=>x.method==='thread/start').params.cwd,await import('node:fs/promises').then(fs=>fs.realpath(dir)));
   assert.equal(c.calls.find(x=>x.method==='turn/start').params.sandboxPolicy.type,'workspaceWrite');
   r.config.projects=[]; // A project roster refresh must not invalidate the running task's cwd.
   await r.notification({method:'item/completed',params:{threadId:'thread-test',item:{type:'agentMessage',text:JSON.stringify({state:'done',message:'Готово. Проверены тесты.',screenshots:[]})}}});
@@ -31,7 +31,7 @@ test('a task uses the selected project and reports only after completion',async(
 
 test('a question waits without inference and an answer continues the same thread once',async()=>{
  const dir=await mkdtemp(path.join(os.tmpdir(),'agent-question-test-'));
- try{const c=new FakeCodex(),r=new Runner({projects:[{id:'p',path:dir}]},c);r.lastAccountRead=Date.now();let question;
+ try{const c=new FakeCodex(),r=new Runner({projects:[{id:'p',path:dir}]},c);c.projectPath=dir;r.lastAccountRead=Date.now();let question;
   r.request=async b=>{if(b.action==='question')question={...b.question,answer:null};return b.action==='state'?{tasks:[{id:'t',question}]}:{};};
   await r.execute({id:'t',projectId:'p',runId:'run',title:'Build',description:'Details'});
   await r.notification({method:'item/completed',params:{threadId:'thread-test',item:{type:'agentMessage',phase:'commentary',text:'Working on it'}}});
@@ -59,7 +59,7 @@ test('stopping a waiting task starts no model turn and returns it to backlog',as
 
 test('a persisted question resumes after restart without starting work before an answer',async()=>{
  const dir=await mkdtemp(path.join(os.tmpdir(),'agent-recover-test-'));
- try{const c=new FakeCodex(),r=new Runner({projects:[{id:'p',path:dir}]},c);r.lastAccountRead=Date.now();const task={id:'t',projectId:'p',runId:'r',threadId:'th',status:'running',question:{id:'q',prompt:'Color?',answer:null}};r.request=async()=>({tasks:[task]});
+ try{const c=new FakeCodex(),r=new Runner({projects:[{id:'p',path:dir}]},c);c.projectPath=dir;r.lastAccountRead=Date.now();const task={id:'t',projectId:'p',runId:'r',threadId:'th',status:'running',question:{id:'q',prompt:'Color?',answer:null}};r.request=async()=>({tasks:[task]});
   await r.recover();await r.tick();assert.equal(c.calls.filter(x=>x.method==='turn/start').length,0);assert.equal(r.active.waiting.question.id,'q');
   task.question.answer='Black';await r.tick();assert.equal(c.calls.filter(x=>x.method==='thread/resume').length,1);assert.equal(c.calls.find(x=>x.method==='turn/start').params.threadId,'th');
  }finally{await rm(dir,{recursive:true,force:true});}
@@ -72,6 +72,24 @@ test('a malformed final reply never marks a task done',async()=>{
 
 test('closing the agent preserves a published question for recovery',async()=>{
  const c=new FakeCodex(),r=new Runner({projects:[]},c);r.active={id:'t',runId:'r',threadId:'th',turnId:null,waiting:{published:true,question:{id:'q'}}};const reports=[];r.request=async b=>{reports.push(b);return {};};await r.stop();assert.equal(reports.length,0);assert.equal(c.calls.length,0);
+});
+
+test('restoring a task assigns its existing chat before starting another turn',async()=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'agent-project-resume-'));
+ try{const c=new FakeCodex(),r=new Runner({projects:[{id:'p',path:dir}]},c);c.projectPath=dir;r.request=async()=>({});const original=c.call.bind(c);c.call=async(method,params)=>{if(method==='thread/resume'){c.calls.push({method,params});return {thread:{id:params.threadId}};}return original(method,params);};
+  await r.execute({id:'t',projectId:'p',runId:'r',threadId:'saved-chat',title:'Continue',description:''});
+  assert.equal(c.calls.filter(c=>c.method==='thread/start').length,0);
+  assert.deepEqual(c.calls.find(c=>c.method==='thread/metadata/update').params,{threadId:'saved-chat',projectId:'codex-p'});
+  assert.ok(c.calls.findIndex(c=>c.method==='thread/metadata/update')<c.calls.findIndex(c=>c.method==='turn/start'));
+ }finally{await rm(dir,{recursive:true,force:true});}
+});
+
+test('a missing Codex project does not start model work',async()=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'agent-project-missing-'));
+ try{const c=new FakeCodex(),r=new Runner({projects:[{id:'p',path:dir}]},c);r.request=async()=>({});const original=c.call.bind(c);c.call=async(method,params)=>method==='project/list'?{data:[],nextCursor:null}:original(method,params);
+  await r.execute({id:'t',projectId:'p',runId:'r',title:'Task',description:''});
+  assert.equal(c.calls.filter(c=>c.method==='turn/start').length,0);assert.equal(r.reportPending.status,'backlog');assert.match(r.reportPending.result,/не найден/);
+ }finally{await rm(dir,{recursive:true,force:true});}
 });
 test('interrupted or failed turns never become done',async()=>{
  const c=new FakeCodex(),r=new Runner({projects:[]},c);r.uploadScreenshots=async()=>{};

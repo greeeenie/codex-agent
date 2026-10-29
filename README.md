@@ -68,3 +68,5 @@ Development without the installer remains available with `node runner/start.mjs`
 When a task needs input, its card shows a waiting indicator. Open the card, answer the question, and the agent continues in the same Codex conversation. Waiting only polls the board; it does not run the model. A pending question and its answer are saved so the agent can resume after a restart. Stop remains available while waiting.
 
 Projects removed from Codex disappear from the board after the next project sync. Recreated project IDs for the same local directory are merged, preserving all task history. You can also remove a project from the picker and undo that removal. Removing a project from the board does not delete its local files.
+
+Task conversations are attached to the matching Codex desktop project when created. Restored tasks and pending questions retain their project assignment. Projects are resolved from the desktop identity mapping and verified against their local directory; missing or ambiguous projects do not start model work.
