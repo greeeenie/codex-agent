@@ -29,7 +29,7 @@ try{
  if(!config.token)config.token=await savedToken(config.url);
  if(!config.token){status('pairing','Confirm this computer in your browser');config.token=await connectSite(config.url,{signal:abort.signal});}
  if(stopping)process.exit(0);
- runner=new Runner(config);await runner.start();
+ runner=new Runner({...config,dataDir});await runner.start();
  console.log('Codex Agent started. Queue polling does not invoke the model.');
  while(!stopping){
   try{await runner.tick();}catch(e){status('error',e.message);console.error('Codex Agent: '+e.message);if(runner.closed)throw e;}

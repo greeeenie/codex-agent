@@ -6,6 +6,8 @@ const root=process.cwd(),payload=path.join(root,'.build','payload');
 execFileSync(process.execPath,['windows/prepare-runtime.mjs'],{stdio:'inherit'});
 await mkdir(path.join(payload,'runner'),{recursive:true});
 for(const name of await readdir('runner'))if(name.endsWith('.mjs')&&!name.endsWith('.test.mjs'))await copyFile(path.join('runner',name),path.join(payload,'runner',name));
+await mkdir(path.join(payload,'lib'),{recursive:true});
+for(const name of ['task-title.mjs','interaction.mjs'])await copyFile(path.join('lib',name),path.join(payload,'lib',name));
 await copyFile('package.json',path.join(payload,'package.json'));await copyFile('README.md',path.join(payload,'README.md'));
 // A code-native icon: the same dark circle used by Codex Hub.
 const csc=path.join(process.env.WINDIR??'C:/Windows','Microsoft.NET','Framework64','v4.0.30319','csc.exe');

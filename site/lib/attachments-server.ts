@@ -4,7 +4,7 @@ import type {Attachment} from './board-types';
 export const MAX_FILES=8,MAX_FILE_SIZE=10*1024*1024,MAX_TOTAL_SIZE=20*1024*1024;
 export async function saveTaskFiles(input:Record<string,unknown>,files:File[]){
  const existing=input.id?await getTask(String(input.id)):null;
- if(existing&&!['backlog','queued'].includes(existing.status))throw new BoardError('Сначала верните задачу в Backlog');
+ if(existing?.status==='archived')throw new BoardError('Сначала восстановите задачу из архива');
  const keys=input.attachmentKeys as string[]|undefined;
  if(keys?.some(key=>!existing?.attachments.some(a=>a.key===key)))throw new BoardError('Файл не принадлежит этой задаче');
  const retained=existing?.attachments.filter(a=>!keys||keys.includes(a.key))??[];

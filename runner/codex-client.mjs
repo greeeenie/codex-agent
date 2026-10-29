@@ -17,7 +17,7 @@ export class CodexClient extends EventEmitter{
    if(m.id!==undefined&&!m.method){const pending=this.pending.get(m.id);if(!pending)return;clearTimeout(pending.timer);this.pending.delete(m.id);m.error?pending.reject(new Error(m.error.message)):pending.resolve(m.result);}
    else if(m.id!==undefined&&m.method){this.emit('request',m);}else{this.emit('notification',m);}
   });
-  await this.call('initialize',{clientInfo:{name:'agent_board',title:'Agent Board',version:'1.0.0'},capabilities:{experimentalApi:true}});this.send({method:'initialized',params:{}});
+  await this.call('initialize',{clientInfo:{name:'agent_board',title:'Agent Board',version:'2.0.0'},capabilities:{experimentalApi:true}});this.send({method:'initialized',params:{}});
  }
  fail(e){for(const p of this.pending.values()){clearTimeout(p.timer);p.reject(e);}this.pending.clear();this.emit('closed',e);}
  send(message){this.child.stdin.write(JSON.stringify(message)+'\n');}

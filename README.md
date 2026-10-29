@@ -26,7 +26,7 @@ Windows 10 version 2004 or newer, x64. The installer includes a private, checksu
 
 ## Use
 
-The board has four columns: **Backlog → Queued → Running → Done**. New tasks stay in Backlog until you move them into Queued. The agent takes queued tasks one at a time. Failed, interrupted, or blocked tasks return to Backlog with a short explanation; they are not marked done or automatically retried.
+The board follows **Backlog → Queued → Running → Review → Done**. New tasks stay in Backlog until explicitly queued. One persisted global queue spans all projects, with manual ordering and pause/resume. Completed work goes to Review; only user acceptance makes it Done. Errors, stops and requests for input remain attached to the attempt and never move a card to Backlog automatically.
 
 Successful tasks include a short result and actual screenshots when available. Restoring a task returns it to Backlog with its existing Codex context; it does not revert project files. Queue polling and quota synchronization do not invoke the model.
 
@@ -42,7 +42,7 @@ Local projects are read from Codex's project metadata in `.codex/.codex-global-s
 
 The board remains private. Pairing uses a loopback callback with an Origin check and a random state value. Tokens never appear in command-line arguments, the download, or the public repository. Windows stores the board connection with DPAPI encryption for the current user in `%LOCALAPPDATA%/CodexAgent/connection.json`. The official Codex engine manages Codex authentication; the agent does not read `auth.json`.
 
-Task execution uses the workspace-write sandbox. Additional permissions are not silently granted. If a task needs human input or approval, it stops in Backlog with an explanation. Only the agent's own child process tree is stopped when the tray application exits.
+Task execution uses the workspace-write sandbox. Additional permissions are not silently granted. Questions, command/file/permission approvals and MCP elicitation stay pending on the board until the user answers. The agent forwards the decision to the original live Codex request. Only the agent's own child process tree is stopped when the tray application exits.
 
 ## Build from source
 
@@ -65,14 +65,18 @@ Development without the installer remains available with `node runner/start.mjs`
 
 ## Clarification questions
 
-When a task needs input, its card shows a waiting indicator. Open the card, answer the question, and the agent continues in the same Codex conversation. Waiting only polls the board; it does not run the model. A pending question and its answer are saved so the agent can resume after a restart. Stop remains available while waiting.
+When a task needs input, its card shows a waiting indicator. Open the card, answer the question, and the agent continues in the same Codex conversation. Waiting only polls the board; it does not run the model. Requests, answers, attempts and activity are persisted. After a restart the agent reads the previous turn before reconciling it; it never starts a replacement turn blindly. A request whose process has exited can be continued in a new attempt with saved context. Stop remains available while waiting.
 
-Projects removed from Codex disappear from the board after the next project sync. Recreated project IDs for the same local directory are merged, preserving all task history. You can also remove a project from the picker and undo that removal. Removing a project from the board does not delete its local files.
+Projects removed from Codex remain visible as unavailable so queued work has a clear waiting reason. Recreated project IDs for the same local directory are merged, preserving all task history. You can also remove a project from the picker and undo that removal. Removing a project from the board does not delete its local files.
 
 Task conversations are attached to the matching Codex desktop project when created. Restored tasks and pending questions retain their project assignment. Projects are resolved from the desktop identity mapping and verified against their local directory; missing or ambiguous projects do not start model work.
 
-Codex conversations use their board card titles. The initial prompt includes the task text once, followed by concise execution and reporting instructions.
+Codex conversations use their board card titles. The initial prompt includes the task text and saved clarifications, followed by concise execution and reporting instructions. The website retains each attempt’s original input snapshot.
 
 ## Task composer
 
 Select a model and reasoning effort from the installed Codex catalog, attach up to eight files (10 MB per file, 20 MB total), or dictate task text in browsers supporting the Web Speech API. Dictation inserts editable text and never submits automatically. Files are stored with the private board task and downloaded into the selected project when it starts. Images are included as Codex image inputs. Permission and conversation-mode selectors are omitted.
+
+Version 0.5 adds modal drafts, independently editable titles, a Review acceptance step, attempt history, safe report retries, task chat import/linking, and explicit human decisions for live protocol requests. See [the workflow documentation](site/README.md) for recovery and delivery limits.
+
+Version 0.5 adds modal drafts, independently editable titles, a Review acceptance step, attempt history, safe report retries, task chat import/linking, and explicit human decisions for live protocol requests. See [the workflow documentation](site/README.md) for recovery and delivery limits.
