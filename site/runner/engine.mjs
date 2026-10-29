@@ -128,7 +128,7 @@ export class Runner{
    const projectId=await resolveCodexProject(this.client,project,cwd);this.active.cwd=cwd;
    if(task.model){const model=this.agent.models?.find(m=>m.id===task.model);if(!model)throw new Error('Выбранная модель недоступна в установленном Codex');if(task.effort&&!model.efforts.includes(task.effort))throw new Error('Выбранная глубина рассуждения недоступна');}
    const attachments=await prepareAttachments(task,cwd,this.config);this.active.imageInputs=attachments.images;
-   const threadParams={cwd,approvalPolicy:'on-request',sandbox:'workspace-write',...(task.model?{model:task.model}:{})};
+   const threadParams={cwd,approvalPolicy:'never',sandbox:'danger-full-access',...(task.model?{model:task.model}:{})};
    let resumeThreadId=task.threadId;
    // Replace only a recorded startup failure that never reached a turn, not a lost conversation.
    if(resumeThreadId){
@@ -162,7 +162,7 @@ export class Runner{
  }
  async startTurn(prompt){
   const active=this.active;active.messages=[];active.finalText=null;active.turnId=null;const cwd=active.cwd;
-  const turn=await this.client.call('turn/start',{threadId:active.threadId,input:[{type:'text',text:prompt},...(active.imageInputs??[])],cwd,approvalPolicy:'on-request',sandboxPolicy:{type:'workspaceWrite',writableRoots:[cwd],networkAccess:false},summary:'concise',outputSchema:taskResultSchema,...(active.model?{model:active.model}:{}),...(active.effort?{effort:active.effort}:{})});
+  const turn=await this.client.call('turn/start',{threadId:active.threadId,input:[{type:'text',text:prompt},...(active.imageInputs??[])],cwd,approvalPolicy:'never',sandboxPolicy:{type:'dangerFullAccess'},summary:'concise',outputSchema:taskResultSchema,...(active.model?{model:active.model}:{}),...(active.effort?{effort:active.effort}:{})});
   active.imageInputs=[];if(this.active!==active||this.reportPending)return;active.turnId=turn.turn.id;await this.persist();
   try{await this.request({action:'report',id:active.id,runId:active.runId,threadId:active.threadId,turnId:active.turnId});}catch(e){if(e.status===409){await this.client.call('turn/interrupt',{threadId:active.threadId,turnId:active.turnId}).catch(()=>{});throw e;}/* The local journal retains IDs until connectivity returns. */}
  }

@@ -21,7 +21,10 @@ test('a task uses the selected project and reports only after completion',async(
  try{const c=new FakeCodex(),r=new Runner({url:'https://example.test',token:'test',projects:[{id:'p',path:dir}]},c);c.cwd=dir;r.request=async()=>({});
   await r.execute({id:'task-test',projectId:'p',runId:'run-test',title:'A task',description:'Details'});
   assert.equal(r.reportPending,null);assert.equal(c.calls.find(x=>x.method==='thread/start').params.cwd,await import('node:fs/promises').then(fs=>fs.realpath(dir)));
-  assert.equal(c.calls.find(x=>x.method==='turn/start').params.sandboxPolicy.type,'workspaceWrite');
+  assert.equal(c.calls.find(x=>x.method==='thread/start').params.approvalPolicy,'never');
+  assert.equal(c.calls.find(x=>x.method==='thread/start').params.sandbox,'danger-full-access');
+  assert.equal(c.calls.find(x=>x.method==='turn/start').params.approvalPolicy,'never');
+  assert.deepEqual(c.calls.find(x=>x.method==='turn/start').params.sandboxPolicy,{type:'dangerFullAccess'});
   await r.notification({method:'item/completed',params:{threadId:'thread-test',item:{type:'agentMessage',text:JSON.stringify({state:'done',message:'Готово. Проверены тесты.',screenshots:[]})}}});
   await r.notification({method:'turn/completed',params:{threadId:'thread-test',turn:{status:'completed'}}});
   assert.equal(r.reportPending.status,'review');assert.equal(r.reportPending.runId,'run-test');assert.equal(r.reportPending.result,'Готово. Проверены тесты.');
@@ -99,6 +102,7 @@ test('an existing chat resumes in its project without a redundant metadata updat
   const r=new Runner({projects:[{id:'p',path:dir}]},c);r.request=async()=>({});
   await r.execute({id:'t',runId:'r',projectId:'p',threadId:'existing',title:'Task'});
   assert.equal(r.reportPending,null);assert.equal(c.calls.some(x=>x.method==='thread/start'||x.method==='thread/metadata/update'),false);
-  assert.equal(c.calls.find(x=>x.method==='thread/resume').params.excludeTurns,true);assert.equal(c.calls.find(x=>x.method==='turn/start').params.threadId,'existing');
+  const resumed=c.calls.find(x=>x.method==='thread/resume').params;assert.equal(resumed.excludeTurns,true);assert.equal(resumed.approvalPolicy,'never');assert.equal(resumed.sandbox,'danger-full-access');
+  assert.equal(c.calls.find(x=>x.method==='turn/start').params.threadId,'existing');assert.equal(c.calls.find(x=>x.method==='turn/start').params.approvalPolicy,'never');assert.deepEqual(c.calls.find(x=>x.method==='turn/start').params.sandboxPolicy,{type:'dangerFullAccess'});
  }finally{await rm(dir,{recursive:true,force:true});}
 });

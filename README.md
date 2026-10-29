@@ -42,7 +42,7 @@ Local projects are read from Codex's project metadata in `.codex/.codex-global-s
 
 The board remains private. Pairing uses a loopback callback with an Origin check and a random state value. Tokens never appear in command-line arguments, the download, or the public repository. Windows stores the board connection with DPAPI encryption for the current user in `%LOCALAPPDATA%/CodexAgent/connection.json`. The official Codex engine manages Codex authentication; the agent does not read `auth.json`.
 
-Task execution uses the workspace-write sandbox. Additional permissions are not silently granted. Questions, command/file/permission approvals and MCP elicitation stay pending on the board until the user answers. The agent forwards the decision to the original live Codex request. Only the agent's own child process tree is stopped when the tray application exits.
+Task execution uses full filesystem and network access (`danger-full-access`) with command approvals disabled (`never`). This applies to new chats, resumed chats, and follow-up turns. Task clarification questions and connector-specific consent remain interactive on the board. Only the agent's own child process tree is stopped when the tray application exits.
 
 ## Build from source
 

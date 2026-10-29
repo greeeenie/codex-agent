@@ -12,7 +12,7 @@ Cards open in a modal above the board. Titles and descriptions can be edited ind
 
 ## Human input and recovery
 
-Command, file and permission approvals, Codex questions and MCP elicitation remain pending until the user answers. The board retains request IDs, methods, prompts and form/options data; the agent responds to the original live request. No additional permission is silently granted. Structured final questions remain waiting instead of becoming successful results. Successful work goes to Review.
+The local agent runs task commands with full filesystem and network access and command approvals disabled. Codex clarification questions and connector-specific consent remain pending until the user answers. The board retains request IDs, methods, prompts and form/options data; the agent responds to the original live request. Structured final questions remain waiting instead of becoming successful results. Successful work goes to Review.
 
 Attempts and transition/activity/question/answer events are retained. Reports compare the attempt ID at the write and are safe to retry after a lost HTTP response. Late reports and screenshots cannot change a newer attempt. The local execution journal contains attempt/context IDs and pending deliveries, never the Site token. Recovery reads the previous Codex turn before reporting its observed outcome and does not automatically start a new turn. A lost live request offers continuation with saved context. An offline stop holds the execution slot until the agent confirms the interruption; changing connection status alone never moves a card.
 
