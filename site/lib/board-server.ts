@@ -3,10 +3,10 @@ import { getDb } from '../db';
 import { projects, tasks, settings } from '../db/schema';
 import { eq, asc, and, notInArray } from 'drizzle-orm';
 import {projectIdentity} from './project-identity.mjs';
-import type { Task, Snapshot, Project } from './board-types';
+import type { Task, Snapshot, Project, Attachment } from './board-types';
 export class BoardError extends Error { constructor(message: string, public status = 400) { super(message); } }
 export function checkOrigin(request: Request) { const origin = request.headers.get('origin'); if (origin && origin !== new URL(request.url).origin) throw new BoardError('Недопустимый источник запроса', 403); }
-export const taskFromRow = (row: typeof tasks.$inferSelect): Task => ({...row, status: (row.status==='review'?'backlog':row.status) as Task['status'], screenshots: JSON.parse(row.screenshots),question:row.question?JSON.parse(row.question):null});
+export const taskFromRow = (row: typeof tasks.$inferSelect): Task => ({...row, status: (row.status==='review'?'backlog':row.status) as Task['status'], screenshots: JSON.parse(row.screenshots),question:row.question?JSON.parse(row.question):null,attachments:JSON.parse(row.attachments)});
 export async function setting(key: string) { const row = await getDb().select().from(settings).where(eq(settings.key, key)).get(); return row ? JSON.parse(row.value) : null; }
 export async function setSetting(key: string, value: unknown) { await getDb().insert(settings).values({key, value: JSON.stringify(value)}).onConflictDoUpdate({target: settings.key, set: {value: JSON.stringify(value)}}); }
 export async function snapshot(): Promise<Snapshot> {
@@ -15,14 +15,20 @@ export async function snapshot(): Promise<Snapshot> {
 }
 export async function getTask(id: string) { const row = await getDb().select().from(tasks).where(eq(tasks.id,id)).get(); if (!row) throw new BoardError('Задача не найдена',404); return taskFromRow(row); }
 function string(value: unknown, max: number) { if(typeof value!=='string'||value.length>max) throw new BoardError('Проверьте длину текста'); return value.trim(); }
-export async function createTask(input: Record<string,unknown>) {
+async function taskOptions(input:Record<string,unknown>,previous?:Task,attachments:Attachment[]=previous?.attachments??[]){
+ const model=input.model===undefined?previous?.model??null:input.model===null?null:string(input.model,160),effort=input.effort===undefined?previous?.effort??null:input.effort===null?null:string(input.effort,40);
+ if(!model&&effort)throw new BoardError('Выберите модель');
+ if(model){const agent=await setting('agent'),option=agent?.models?.find((m:{id:string})=>m.id===model);if(!option)throw new BoardError('Выберите доступную модель');if(attachments.some(a=>a.type.startsWith('image/'))&&!option.inputModalities.includes('image'))throw new BoardError('Эта модель не поддерживает изображения');if(effort&&!option.efforts.includes(effort))throw new BoardError('Выберите доступную глубину рассуждения');}
+ return {model,effort};
+}
+export async function createTask(input: Record<string,unknown>,attachments:Attachment[]=[],id=crypto.randomUUID()) {
   const projectId=string(input.projectId,200), title=string(input.title,180), description=string(input.description??'',30000);
   if(!title) throw new BoardError('Добавьте название задачи');
   const project=await getDb().select().from(projects).where(eq(projects.id,projectId)).get();
   if(!project||!project.isAvailable||project.isHidden) throw new BoardError('Проект больше не доступен на доске');
-  const id=crypto.randomUUID();await getDb().insert(tasks).values({id,projectId,title,description,status:'backlog',createdAt:Date.now()});return getTask(id);
+  const options=await taskOptions(input,undefined,attachments);await getDb().insert(tasks).values({id,projectId,title,description,...options,attachments:JSON.stringify(attachments),status:'backlog',createdAt:Date.now()});return getTask(id);
 }
-export async function updateTask(id: string,input: Record<string,unknown>) {
+export async function updateTask(id: string,input: Record<string,unknown>,attachments?:Attachment[]) {
   const task=await getTask(id);
   if(input.action==='stop') {if(task.status!=='running') throw new BoardError('Задача уже остановлена');await getDb().update(tasks).set({stopRequested:1}).where(eq(tasks.id,id));}
   else if(input.action==='restore') {
@@ -37,14 +43,15 @@ export async function updateTask(id: string,input: Record<string,unknown>) {
   } else {
     if(!['backlog','queued'].includes(task.status)) throw new BoardError('Сначала верните задачу в Backlog');
     const title=string(input.title,180);if(!title) throw new BoardError('Добавьте название');
-    await getDb().update(tasks).set({title,description:string(input.description??'',30000)}).where(eq(tasks.id,id));
+    await getDb().update(tasks).set({title,description:string(input.description??'',30000),...await taskOptions(input,task,attachments??task.attachments),...(attachments?{attachments:JSON.stringify(attachments)}:{})}).where(eq(tasks.id,id));
   }return getTask(id);
 }
-export async function claimTask(projectIds?: string[]) {
+export async function claimTask(projectIds?: string[],capabilities:string[]=[]) {
   if(await setting('paused'))return null;
   if(projectIds&&!projectIds.length)return null;
   const filter=projectIds?.length?` AND t.project_id IN (${projectIds.map(()=>'?').join(',')})`:'';
-  const row=await env.DB!.prepare(`UPDATE tasks SET question=NULL,status='running',started_at=?,finished_at=NULL,stop_requested=0,run_id=? WHERE id=(SELECT t.id FROM tasks t JOIN projects p ON p.id=t.project_id WHERE t.status='queued' AND p.is_available=1 AND p.is_hidden=0${filter} ORDER BY t.created_at LIMIT 1) AND status='queued' RETURNING id`).bind(Date.now(),crypto.randomUUID(),...(projectIds??[])).first<{id:string}>();
+  const compatible=capabilities.includes('task-input-v1')?'':" AND t.model IS NULL AND t.effort IS NULL AND t.attachments='[]'";
+  const row=await env.DB!.prepare(`UPDATE tasks SET question=NULL,status='running',started_at=?,finished_at=NULL,stop_requested=0,run_id=? WHERE id=(SELECT t.id FROM tasks t JOIN projects p ON p.id=t.project_id WHERE t.status='queued' AND p.is_available=1 AND p.is_hidden=0${filter}${compatible} ORDER BY t.created_at LIMIT 1) AND status='queued' RETURNING id`).bind(Date.now(),crypto.randomUUID(),...(projectIds??[])).first<{id:string}>();
   return row?getTask(row.id):null;
 }
 export async function reportTask(id: string,input: Record<string,unknown>) {

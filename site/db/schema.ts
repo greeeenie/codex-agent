@@ -10,6 +10,7 @@ export const tasks = sqliteTable('tasks', {
   createdAt: integer('created_at').notNull(), startedAt: integer('started_at'), finishedAt: integer('finished_at'),
   threadId: text('thread_id'), turnId: text('turn_id'), runId: text('run_id'),
   question: text('question'),
+  model: text('model'), effort: text('effort'), attachments: text('attachments').notNull().default('[]'),
   screenshots: text('screenshots').notNull().default('[]'), stopRequested: integer('stop_requested').notNull().default(0),
 });
 export const settings = sqliteTable('settings', { key: text('key').primaryKey(), value: text('value').notNull() });

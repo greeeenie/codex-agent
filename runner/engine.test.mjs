@@ -8,7 +8,7 @@ import {Runner} from './engine.mjs';
 class FakeCodex extends EventEmitter{
  constructor(){super();this.calls=[];this.replies=[];}
  async start(){}
- async call(method,params){this.calls.push({method,params});if(method==='project/list')return {data:[{id:'codex-p',roots:[{path:this.projectPath}]}],nextCursor:null};if(method==='account/read')return {account:{type:'chatgpt',planType:'plus'}};if(method==='account/rateLimits/read')return {rateLimits:{primary:{usedPercent:42}}};if(method==='thread/start')return {thread:{id:'thread-test'}};if(method==='turn/start')return {turn:{id:'turn-test'}};return {};}
+ async call(method,params){this.calls.push({method,params});if(method==='model/list')return {data:[],nextCursor:null};if(method==='project/list')return {data:[{id:'codex-p',roots:[{path:this.projectPath}]}],nextCursor:null};if(method==='account/read')return {account:{type:'chatgpt',planType:'plus'}};if(method==='account/rateLimits/read')return {rateLimits:{primary:{usedPercent:42}}};if(method==='thread/start')return {thread:{id:'thread-test'}};if(method==='turn/start')return {turn:{id:'turn-test'}};return {};}
  reply(id,result){this.replies.push({id,result});}send(){}close(){}
 }
 test('queue polling does not start an inference turn when empty or signed out',async()=>{
@@ -101,6 +101,15 @@ test('a single-field task is sent once without losing its full instructions',asy
   await r.execute({id:'t',projectId:'p',runId:'r',title,description});const prompt=c.calls.find(c=>c.method==='turn/start').params.input[0].text;
   assert.ok(prompt.startsWith(description));assert.equal(prompt.split(title).length-1,1);assert.deepEqual(c.calls.find(c=>c.method==='thread/name/set').params,{threadId:'thread-test',name:title});
  }finally{await rm(dir,{recursive:true,force:true});}
+});
+
+test('the selected model, effort and image are sent to Codex, with images sent only once',async()=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'agent-composer-test-')),originalFetch=globalThis.fetch;
+ try{const c=new FakeCodex(),r=new Runner({url:'https://board.test',token:'test-only',projects:[{id:'p',path:dir}]},c);c.projectPath=dir;r.request=async()=>({});globalThis.fetch=async()=>new Response(new Uint8Array([1,2,3]));
+  await r.execute({id:'task-test',projectId:'p',runId:'run-test',title:'Read image',description:'Read image',model:'chosen-model',effort:'high',attachments:[{key:'inputs/task-test/11111111-1111-1111-1111-111111111111',name:'sample.png',type:'image/png',size:3}]});
+  const turn=c.calls.find(c=>c.method==='turn/start').params;assert.equal(turn.model,'chosen-model');assert.equal(turn.effort,'high');assert.equal(turn.input[1].type,'localImage');assert.match(turn.input[0].text,/Приложения:/);assert.equal(c.calls.find(c=>c.method==='thread/start').params.model,'chosen-model');
+  await r.startTurn('Continue');const next=c.calls.filter(c=>c.method==='turn/start').at(-1).params;assert.equal(next.input.length,1);assert.equal(next.model,'chosen-model');assert.equal(next.effort,'high');
+ }finally{globalThis.fetch=originalFetch;await rm(dir,{recursive:true,force:true});}
 });
 test('interrupted or failed turns never become done',async()=>{
  const c=new FakeCodex(),r=new Runner({projects:[]},c);r.uploadScreenshots=async()=>{};

@@ -72,3 +72,7 @@ Projects removed from Codex disappear from the board after the next project sync
 Task conversations are attached to the matching Codex desktop project when created. Restored tasks and pending questions retain their project assignment. Projects are resolved from the desktop identity mapping and verified against their local directory; missing or ambiguous projects do not start model work.
 
 Codex conversations use their board card titles. The initial prompt includes the task text once, followed by concise execution and reporting instructions.
+
+## Task composer
+
+Select a model and reasoning effort from the installed Codex catalog, attach up to eight files (10 MB per file, 20 MB total), or dictate task text in browsers supporting the Web Speech API. Dictation inserts editable text and never submits automatically. Files are stored with the private board task and downloaded into the selected project when it starts. Images are included as Codex image inputs. Permission and conversation-mode selectors are omitted.

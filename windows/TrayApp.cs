@@ -11,8 +11,8 @@ using Microsoft.Win32;
 
 [assembly: System.Reflection.AssemblyTitle("Codex Agent")]
 [assembly: System.Reflection.AssemblyDescription("Local agent for Codex Hub")]
-[assembly: System.Reflection.AssemblyVersion("0.3.3.0")]
-[assembly: System.Reflection.AssemblyFileVersion("0.3.3.0")]
+[assembly: System.Reflection.AssemblyVersion("0.4.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("0.4.0.0")]
 internal static class Program {
  internal const string BoardUrl="https://agent-board-stepan.readymars.chatgpt.site/";
  internal static string Root=AppDomain.CurrentDomain.BaseDirectory;

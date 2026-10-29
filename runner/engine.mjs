@@ -5,6 +5,8 @@ import {openBrowser} from './connect.mjs';
 import {status} from './desktop-status.mjs';
 import {discoverProjects,resolveCodexProject} from './projects.mjs';
 import {taskResultSchema,readTaskResult} from './task-result.mjs';
+import {readModels} from './models.mjs';
+import {prepareAttachments} from './attachments.mjs';
 
 export class Runner{
  constructor(config,client=new CodexClient()){this.config=config;this.client=client;this.agent={account:null};this.active=null;this.reportPending=null;this.lastCommand=null;this.lastAccountRead=0;this.closed=false;}
@@ -20,6 +22,7 @@ export class Runner{
  async refreshAccount(){this.lastAccountRead=Date.now();try{const {account}=await this.client.call('account/read',{refreshToken:false});this.agent.account=account;
   if(account?.type==='chatgpt'){const limits=await this.client.call('account/rateLimits/read',{});this.agent.rateLimits=limits.rateLimits??{};}
   if(account){delete this.agent.authUrl;delete this.agent.error;}
+  if(account)try{this.agent.models=await readModels(this.client);}catch(e){console.error(`Не удалось обновить модели: ${e.message}`);}
  }catch(e){this.agent.error=e.message;}}
  async recover(){const state=await this.request({action:'state'});const ids=new Set(this.config.projects.map(p=>p.id));
   // A persisted question is safe to resume: no model turn was running while waiting.
@@ -27,7 +30,7 @@ export class Runner{
    if(t.question&&t.threadId&&!t.stopRequested&&!this.active){try{
     const project=this.config.projects.find(p=>p.id===t.projectId),cwd=await realpath(project.path);
     const projectId=await resolveCodexProject(this.client,project,cwd);
-    await this.client.call('thread/resume',{threadId:t.threadId,cwd,approvalPolicy:'on-request',sandbox:'workspace-write'});
+    await this.client.call('thread/resume',{threadId:t.threadId,cwd,approvalPolicy:'on-request',sandbox:'workspace-write',...(t.model?{model:t.model}:{})});
     await this.client.call('thread/metadata/update',{threadId:t.threadId,projectId});
     await this.client.call('thread/name/set',{threadId:t.threadId,name:t.title});
     this.active={...t,cwd,turnId:null,messages:[],waiting:{question:t.question,published:true}};continue;
@@ -60,7 +63,7 @@ export class Runner{
   }
   if(!this.agent.account||this.agent.authUrl){status('signing-in','Sign in to Codex');return;}
   status(this.active?'running':this.config.projects.length?'ready':'waiting-projects','');
-  const {task}=await this.request({action:'claim',projectIds:this.config.projects.map(p=>p.id)});if(task)await this.execute(task);
+  const {task}=await this.request({action:'claim',projectIds:this.config.projects.map(p=>p.id),capabilities:['task-input-v1']});if(task)await this.execute(task);
  }
  async execute(task){status('running','Codex is working on a task');this.active={...task,messages:[],shots:[]};
   try{
@@ -68,8 +71,9 @@ export class Runner{
    const cwd=await realpath(project.path);if(!(await stat(cwd)).isDirectory())throw new Error('Папка проекта не найдена');
    const projectId=await resolveCodexProject(this.client,project,cwd);
    this.active.cwd=cwd;
+   const attachments=await prepareAttachments(task,cwd,this.config);this.active.imageInputs=attachments.images;
    let thread;
-   const threadParams={cwd,approvalPolicy:'on-request',sandbox:'workspace-write'};
+   const threadParams={cwd,approvalPolicy:'on-request',sandbox:'workspace-write',...(task.model?{model:task.model}:{})};
    if(task.threadId){try{thread=await this.client.call('thread/resume',{...threadParams,threadId:task.threadId});}catch{thread=await this.client.call('thread/start',{...threadParams,projectId});}
     await this.client.call('thread/metadata/update',{threadId:thread.thread.id,projectId});
    }else thread=await this.client.call('thread/start',{...threadParams,projectId});
@@ -79,13 +83,14 @@ export class Runner{
    const outputDir=path.join(cwd,'.agent-board','results',task.id);await mkdir(outputDir,{recursive:true});
    const description=task.description.trim(),text=description.startsWith(task.title)?description:[task.title,description].filter(Boolean).join('\n\n');
    const prompt=`${text}\n\nВыполни и проверь задачу. Не затирай изменения пользователя. Не отправляй сообщения людям и не публикуй без явного указания.\nОтвет по JSON-схеме: если нужно уточнение — state=question, message=один вопрос, screenshots=[]; жди ответа. После завершения — state=done, message=итог, проверка и что осталось (до 3 коротких предложений).\nscreenshots: пути реальных PNG/JPEG/WebP внутри ${outputDir}; без визуального результата — []. Не заменяй скриншот сгенерированной картинкой.`;
-   await this.startTurn(prompt);
+   await this.startTurn(prompt+(attachments.paths.length?'\n\nПриложения:\n'+attachments.paths.join('\n'):''));
   }catch(e){this.finish('backlog',`Не удалось выполнить задачу: ${e.message}`);}
  }
  async startTurn(prompt){
   const active=this.active;active.messages=[];active.finalText=null;
   const cwd=active.cwd;
-  const turn=await this.client.call('turn/start',{threadId:active.threadId,input:[{type:'text',text:prompt}],cwd,approvalPolicy:'on-request',sandboxPolicy:{type:'workspaceWrite',writableRoots:[cwd],networkAccess:false},summary:'concise',outputSchema:taskResultSchema});
+  const turn=await this.client.call('turn/start',{threadId:active.threadId,input:[{type:'text',text:prompt},...(active.imageInputs??[])],cwd,approvalPolicy:'on-request',sandboxPolicy:{type:'workspaceWrite',writableRoots:[cwd],networkAccess:false},summary:'concise',outputSchema:taskResultSchema,...(active.model?{model:active.model}:{}),...(active.effort?{effort:active.effort}:{})});
+  active.imageInputs=[];
   if(this.active!==active)return;active.turnId=turn.turn.id;
   await this.request({action:'report',id:active.id,runId:active.runId,threadId:active.threadId,turnId:active.turnId});
  }
