@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import '@fontsource-variable/inter';
+import './redesign.css';
 
 export const metadata: Metadata = {
   title: "Codex Hub",

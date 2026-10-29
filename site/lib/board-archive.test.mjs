@@ -127,3 +127,25 @@ test('user stop without connectivity holds the global execution slot until ackno
  const stopped=await updateTask(t.id,{action:'stop'});assert.equal(stopped.stopRequested,1);assert.equal(stopped.finishedAt,null);assert.equal(await claimTask(['project'],workerCapabilities),null);
  await reportTask(t.id,{runId:run.runId,status:'stopped',result:'Stopped'});assert.ok(await claimTask(['project'],workerCapabilities));
 });
+
+test('manual moves preserve execution rules and allow sorting completed columns',async()=>{
+ const a=await createTask({projectId:'project',title:'A'}),b=await createTask({projectId:'project',title:'B'});
+ await assert.rejects(updateTask(a.id,{action:'move',status:'done'}),BoardError);
+ await updateTask(a.id,{action:'move',status:'running'});assert.equal((await getTask(a.id)).status,'queued');
+ const run=await claimTask(['project'],workerCapabilities);await assert.rejects(updateTask(a.id,{action:'move',status:'backlog'}),BoardError);
+ await reportTask(a.id,{runId:run.runId,status:'review',result:'A result'});await updateTask(a.id,{action:'move',status:'done',beforeId:'task'});
+ assert.equal((await snapshot()).tasks.filter(t=>t.status==='done')[0].id,a.id);
+ await updateTask(a.id,{action:'move',status:'review'});assert.equal((await getTask(a.id)).result,'A result');
+ await updateTask(a.id,{action:'move',status:'queued'});assert.equal((await getTask(a.id)).executionStatus,'idle');
+ await updateTask(b.id,{action:'reorder',direction:'first'});assert.equal((await getTask(b.id)).status,'backlog');
+});
+
+test('delete removes the task and its history while refusing an active execution',async()=>{
+ const t=await queued(),run=await claimTask(['project'],workerCapabilities);
+ await assert.rejects(updateTask(t.id,{action:'delete'}),BoardError);assert.ok(await getTask(t.id));
+ await reportTask(t.id,{runId:run.runId,status:'error',result:'Failed'});await updateTask(t.id,{action:'delete'});
+ await assert.rejects(getTask(t.id),e=>e.status===404);
+ assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM task_runs WHERE task_id=?').get(t.id).count,0);
+ assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM task_events WHERE task_id=?').get(t.id).count,0);
+ assert.ok(await getTask('task'));assert.equal(boardInput.safeParse({id:t.id,action:'delete'}).success,true);
+});

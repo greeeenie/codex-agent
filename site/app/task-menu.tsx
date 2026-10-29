@@ -1,0 +1,18 @@
+'use client';
+import {useEffect,useLayoutEffect,useRef,useState} from 'react';
+import {createPortal} from 'react-dom';
+import {Eye,ArrowRight,ChevronRight,ChevronLeft,Pencil,Copy,Archive,Trash2} from 'lucide-react';
+import {lanes} from './kanban-board';
+import {isExecuting,moveTarget} from '../lib/board-moves.mjs';
+import type {Task,Status} from '../lib/board-types';
+type Props={task:Task;x:number;y:number;busy:boolean;onClose:()=>void;onOpen:()=>void;onRename:()=>void;onDuplicate:()=>void;onArchive:()=>void;onDelete:()=>void;onMove:(status:Status)=>void};
+export default function TaskMenu(p:Props){
+ const ref=useRef<HTMLDivElement>(null),[position,setPosition]=useState({x:p.x,y:p.y}),[moving,setMoving]=useState(false);
+ useLayoutEffect(()=>{const rect=ref.current?.getBoundingClientRect();if(rect)setPosition({x:Math.max(8,Math.min(p.x,innerWidth-rect.width-8)),y:Math.max(8,Math.min(p.y,innerHeight-rect.height-8))});ref.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();},[p.x,p.y,moving]);
+ useEffect(()=>{const focused=document.activeElement as HTMLElement;return()=>{if(document.activeElement===document.body&&focused?.isConnected)focused.focus({preventScroll:true});};},[]);
+ useEffect(()=>{const close=(e:PointerEvent)=>{if(!ref.current?.contains(e.target as Node))p.onClose();};document.addEventListener('pointerdown',close);window.addEventListener('resize',p.onClose);return()=>{document.removeEventListener('pointerdown',close);window.removeEventListener('resize',p.onClose);};},[p.onClose]);
+ function action(run:()=>void){p.onClose();run();}
+ return createPortal(<div ref={ref} role="menu" aria-label={`Действия: ${p.task.title}`} className="task-context-menu" style={{left:position.x,top:position.y}} onContextMenu={e=>e.preventDefault()} onKeyDown={e=>{if(e.key==='Escape'){e.preventDefault();e.stopPropagation();p.onClose();}if(e.key==='ArrowLeft'&&moving){setMoving(false);e.preventDefault();}if(['ArrowDown','ArrowUp','Home','End'].includes(e.key)){e.preventDefault();const buttons=Array.from(ref.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')??[]),index=buttons.indexOf(document.activeElement as HTMLButtonElement);buttons[e.key==='Home'?0:e.key==='End'?buttons.length-1:(index+(e.key==='ArrowDown'?1:-1)+buttons.length)%buttons.length]?.focus();}}}>
+ {moving?<><button role="menuitem" onClick={()=>setMoving(false)}><ChevronLeft size={16}/>Переместить в</button><div className="menu-separator"/>{lanes.map(lane=><button role="menuitem" key={lane.id} disabled={p.busy||lane.id===p.task.status||!moveTarget(p.task,lane.id)} onClick={()=>action(()=>p.onMove(lane.id))}><ArrowRight size={16}/>{lane.name}</button>)}</>:<><button role="menuitem" onClick={()=>action(p.onOpen)}><Eye size={17}/>Открыть</button><button role="menuitem" aria-haspopup="menu" aria-expanded={moving} onClick={()=>setMoving(true)} onKeyDown={e=>{if(e.key==='ArrowRight'){e.preventDefault();setMoving(true);}}}><ArrowRight size={17}/>Переместить в<ChevronRight className="menu-chevron" size={16}/></button><button role="menuitem" disabled={p.busy||p.task.status==='archived'} onClick={()=>action(p.onRename)}><Pencil size={17}/>Переименовать</button><button role="menuitem" disabled={p.busy} onClick={()=>action(p.onDuplicate)}><Copy size={17}/>Дублировать</button><button role="menuitem" disabled={p.busy||p.task.status!=='done'} onClick={()=>action(p.onArchive)}><Archive size={17}/>Архивировать</button><div className="menu-separator"/><button role="menuitem" className="destructive" disabled={p.busy||isExecuting(p.task)} onClick={()=>action(p.onDelete)}><Trash2 size={17}/>Удалить</button></>}
+ </div>,document.body);
+}

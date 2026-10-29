@@ -7,6 +7,7 @@ import {projectIdentity} from './project-identity.mjs';
 import {PENDING_TASK_TITLE,validateTaskTitle} from './task-title.mjs';
 import type { Task, Snapshot, Project, Attachment, Question } from './board-types';
 import {interactionReply} from './interaction.mjs';
+import {moveTarget} from './board-moves.mjs';
 export class BoardError extends Error { constructor(message: string, public status = 400) { super(message); } }
 export function checkOrigin(request: Request) { const origin = request.headers.get('origin'); if (origin && origin !== new URL(request.url).origin) throw new BoardError('Недопустимый источник запроса', 403); }
 export const taskFromRow = (row: typeof tasks.$inferSelect): Task => ({...row, status: row.status as Task['status'], executionStatus:row.executionStatus as Task['executionStatus'], screenshots: JSON.parse(row.screenshots),question:row.question?JSON.parse(row.question):null,attachments:JSON.parse(row.attachments)});
@@ -36,15 +37,29 @@ const active=(task:Task)=>task.status==='running'&&['idle','running','waiting'].
 async function guardedUpdate(task:Task,patch:Partial<{[K in keyof typeof tasks.$inferInsert]:(typeof tasks.$inferInsert)[K]|SQL}>){const changed=await getDb().update(tasks).set(patch).where(and(eq(tasks.id,task.id),eq(tasks.status,task.status),sql`${tasks.runId} IS ${task.runId}`,eq(tasks.executionStatus,task.executionStatus))).returning({id:tasks.id});if(!changed.length)throw new BoardError('Состояние задачи изменилось. Обновите доску.',409);}
 async function event(task:Task,type:string,text:string,actor='user',id=crypto.randomUUID()){await getDb().insert(taskEvents).values({id,taskId:task.id,runId:task.runId,at:Date.now(),type,actor,text}).onConflictDoNothing();}
 export async function reorderTask(id:string,input:Record<string,unknown>){
- const task=await getTask(id);if(!['backlog','queued'].includes(task.status))throw new BoardError('Сортировка доступна в бэклоге и очереди');
+ const task=await getTask(id);
  const list=await getDb().select({id:tasks.id}).from(tasks).where(eq(tasks.status,task.status)).orderBy(asc(tasks.position),asc(tasks.createdAt),asc(tasks.id));
  const current=list.findIndex(t=>t.id===id),ids=list.map(t=>t.id);ids.splice(current,1);
  let target=ids.length;if(input.direction==='first')target=0;else if(input.direction==='up')target=Math.max(0,current-1);else if(input.direction==='down')target=Math.min(ids.length,current+1);else if(input.beforeId){target=ids.indexOf(String(input.beforeId));if(target<0)throw new BoardError('Целевая карточка уже переместилась',409);}ids.splice(target,0,id);
- await env.DB!.batch(ids.map((key,index)=>env.DB!.prepare('UPDATE tasks SET position=? WHERE id=? AND status=?').bind((index+1)*1024,key,task.status)));
+ await env.DB!.batch([...ids.map((key,index)=>env.DB!.prepare('UPDATE tasks SET position=? WHERE id=? AND status=?').bind((index+1)*1024,key,task.status)),env.DB!.prepare('UPDATE tasks SET activity_at=? WHERE id=? AND status=?').bind(Date.now(),id,task.status)]);
  await event(task,'order','Изменён порядок в '+(task.status==='queued'?'общей очереди':'бэклоге'));return getTask(id);
 }
 export async function updateTask(id: string,input: Record<string,unknown>,attachments?:Attachment[]) {
   const task=await getTask(id);
+  if(input.action==='delete'){
+   if(active(task))throw new BoardError('Сначала остановите задачу');
+   const predicate='SELECT id FROM tasks WHERE id=? AND status=? AND execution_status=? AND run_id IS ? AND finished_at IS ?';
+   const values=[id,task.status,task.executionStatus,task.runId,task.finishedAt];
+   const results=await env.DB!.batch([
+    env.DB!.prepare(`DELETE FROM task_events WHERE task_id IN (${predicate})`).bind(...values),
+    env.DB!.prepare(`DELETE FROM task_runs WHERE task_id IN (${predicate})`).bind(...values),
+    env.DB!.prepare(`DELETE FROM tasks WHERE id IN (${predicate})`).bind(...values)
+   ]);
+   if(!results.at(-1)?.meta.changes)throw new BoardError('Состояние задачи изменилось. Обновите доску.',409);
+   const keys=[...task.attachments.map(a=>a.key),...task.screenshots.map(s=>s.key)].filter(key=>key.startsWith(`inputs/${id}/`)||key.startsWith(`${id}/`));
+   await Promise.allSettled(keys.map(key=>env.BUCKET?.delete(key)));
+   return {...task,deleted:true};
+  }
   if(input.action==='reorder')return reorderTask(id,input);
   if(input.action==='duplicate'){
    const copyId=crypto.randomUUID(),copied:Attachment[]=[];
@@ -68,14 +83,17 @@ export async function updateTask(id: string,input: Record<string,unknown>,attach
     await guardedUpdate(task,{status:'done',finishedAt:Date.now(),lastAction:'Результат принят пользователем'});
   } else if(input.action==='move') {
     if(input.status===task.status)return input.beforeId!==undefined?reorderTask(id,input):task;
-    if(!({backlog:['queued'],queued:['backlog'],review:['backlog'],done:['backlog']} as Record<string,string[]>)[task.status]?.includes(String(input.status))) throw new BoardError('Этот переход недоступен');
-    await guardedUpdate(task,{status:String(input.status),position:sql`(SELECT COALESCE(MAX(position),0)+1024 FROM tasks WHERE status=${String(input.status)})`,executionStatus:'idle',lastAction:'Пользователь переместил задачу',startedAt:null,finishedAt:null,stopRequested:0,runId:null,turnId:null,question:null});
-    if(input.beforeId)return reorderTask(id,input);
+    const target=moveTarget(task,String(input.status));if(!target)throw new BoardError(active(task)?'Сначала остановите задачу':'Этот переход недоступен');
+    const append=sql`(SELECT COALESCE(MAX(position),0)+1024 FROM tasks WHERE status=${target})`;
+    // Save destination and insertion point together, before a runner can claim the task.
+    const position=input.beforeId&&target===input.status?sql`COALESCE((SELECT (anchor.position+COALESCE((SELECT MAX(prev.position) FROM tasks prev WHERE prev.status=${target} AND prev.id<>${id} AND prev.position<anchor.position),anchor.position-2048))/2 FROM tasks AS anchor WHERE anchor.id=${String(input.beforeId)} AND anchor.status=${target}),${append})`:append;
+    if(target==='done'||target==='review')await guardedUpdate(task,{status:target,activityAt:Date.now(),executionStatus:'completed',lastAction:target==='done'?'Результат принят пользователем':'Результат возвращён на проверку',position});
+    else await guardedUpdate(task,{status:target,activityAt:Date.now(),position,executionStatus:'idle',lastAction:'Пользователь переместил задачу',startedAt:null,finishedAt:null,stopRequested:0,runId:null,turnId:null,question:null});
   } else {
     if(task.status==='archived')throw new BoardError('Сначала восстановите задачу из архива');
     const description=string(input.description??task.description,30000),title=input.title===undefined?task.title:string(input.title,180);
     if(!title||(!description&&title===PENDING_TASK_TITLE))throw new BoardError('Добавьте описание задачи');
-    await guardedUpdate(task,{title,description,...await taskOptions(input,task,attachments??task.attachments),...(attachments?{attachments:JSON.stringify(attachments)}:{})});
+    await guardedUpdate(task,{title,description,activityAt:Date.now(),...await taskOptions(input,task,attachments??task.attachments),...(attachments?{attachments:JSON.stringify(attachments)}:{})});
     await event(task,'edit',active(task)?'Карточка обновлена. Задание активной попытки сохранено без изменений.':'Карточка обновлена');
   }return getTask(id);
 }
